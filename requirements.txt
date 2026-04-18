@@ -1,0 +1,25 @@
+# ML & Audio
+torch>=2.2.0
+numpy>=1.26.0
+librosa>=0.10.0
+soundfile>=0.12.0
+scipy>=1.12.0
+Pillow>=10.0.0
+
+# Audio I/O (test scripts)
+sounddevice>=0.4.6
+pandas>=2.1.0
+
+# Analysis notebook
+scikit-learn>=1.3.0
+matplotlib>=3.8.0
+
+# FastAPI & server
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+
+# StyleGAN3 dependencies
+requests>=2.31.0
+click>=8.1.0
+ninja>=1.11.0
