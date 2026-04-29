@@ -31,6 +31,11 @@ __pycache__/
 *.egg-info/
 .ipynb_checkpoints/
 
+# Secrets
+.env
+.env.local
+*.key
+
 # Backend runtime
 backend/uploads/
 backend/outputs/
