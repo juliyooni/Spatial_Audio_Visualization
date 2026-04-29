@@ -1021,7 +1021,7 @@ def _input_form():
 
     with st.form("main_input"):
         uploaded = st.file_uploader(
-            "음원 파일",
+            "음원 파일 (YouTube URL이 있으면 생략 가능)",
             type=[ext.lstrip(".") for ext in SUPPORTED_EXTS],
             help=f"지원 포맷: {', '.join(SUPPORTED_EXTS)}",
         )
@@ -1031,7 +1031,7 @@ def _input_form():
         with c2:
             artist = st.text_input("아티스트", placeholder="예: aespa")
         youtube_url = st.text_input(
-            "YouTube URL (선택 — Visual Mapping에서 iTunes fallback이 필요할 때)",
+            "YouTube URL (파일이 없으면 여기서 풀 트랙을 받아옵니다)",
             placeholder="https://youtu.be/...",
         )
 
@@ -1053,8 +1053,9 @@ def _input_form():
 
     # 검증
     errors = []
-    if uploaded is None:
-        errors.append("음원 파일을 업로드하세요.")
+    yt_url = (youtube_url or "").strip()
+    if uploaded is None and not yt_url:
+        errors.append("음원 파일 또는 YouTube URL 중 하나는 있어야 합니다.")
     if not title.strip() or not artist.strip():
         errors.append("곡 제목과 아티스트는 필수입니다.")
     if not (do_analysis or do_split or do_visual):
@@ -1064,30 +1065,49 @@ def _input_form():
             st.error(e)
         return False
 
-    # 실행
-    input_path = save_uploaded(uploaded)
-    audio_bytes = uploaded.getvalue() if hasattr(uploaded, "getvalue") else Path(input_path).read_bytes()
-    audio_mime = uploaded.type or "audio/wav"
+    # 음원 확보 — 업로드 우선, 없으면 YouTube에서 다운로드
+    if uploaded is not None:
+        input_path = save_uploaded(uploaded)
+        audio_bytes = uploaded.getvalue() if hasattr(uploaded, "getvalue") else Path(input_path).read_bytes()
+        audio_mime = uploaded.type or "audio/wav"
+        filename = uploaded.name
+    else:
+        with st.status("⬇️ YouTube에서 음원 다운로드 중...", expanded=True) as s:
+            try:
+                from music_analysis.visual_mapping import download_youtube_audio, _audio_mime
+                yt_path = download_youtube_audio(yt_url, f"{artist.strip()}_{title.strip()}")
+                input_path = str(yt_path)
+                audio_bytes = yt_path.read_bytes()
+                audio_mime = _audio_mime(yt_path)
+                filename = yt_path.name
+                s.update(label=f"⬇️ 다운로드 완료: {yt_path.name}", state="complete")
+            except Exception as e:
+                s.update(label=f"⬇️ YouTube 다운로드 실패: {e}", state="error")
+                st.error(f"YouTube 다운로드 실패: {e}")
+                return False
 
     try:
         bundle = _run_pipelines(
             input_path=input_path,
             audio_bytes=audio_bytes,
             audio_mime=audio_mime,
-            filename=uploaded.name,
+            filename=filename,
             title=title.strip(),
             artist=artist.strip(),
-            youtube_url=youtube_url,
+            youtube_url=yt_url or None,
             do_analysis=do_analysis,
             do_split=do_split,
             do_visual=do_visual,
             force_visual_refresh=force_visual,
         )
     finally:
-        try:
-            os.unlink(input_path)
-        except OSError:
-            pass
+        # YouTube로 받은 임시 파일은 visual_mapping이 캐시 디렉토리에 남기므로 삭제하지 않는다.
+        # 업로드만 임시 경로 정리.
+        if uploaded is not None:
+            try:
+                os.unlink(input_path)
+            except OSError:
+                pass
 
     st.session_state["run_bundle"] = bundle
     # 새 ZIP 캐시 초기화 (이전 분석의 export ZIP이 남아있을 수 있음)
