@@ -147,6 +147,15 @@ def download_itunes_preview(title: str, artist: str) -> Optional[Path]:
 
 
 def download_youtube_audio(url: str, basename: str) -> Path:
+    """YouTube에서 오디오만 받아온다.
+
+    YouTube의 player API는 client 종류에 따라 다른 stream URL을 발급하고,
+    그중 일부는 곧바로 403을 뱉는다. yt-dlp 기본값(android_vr 단일)으로 막히는
+    경우가 잦아 web_safari / ios / tv 등 여러 client를 fallback chain으로
+    걸어두면 안정성이 크게 올라간다. 또한 같은 basename의 부분 파일이 남아
+    있을 때 resume이 만료된 토큰으로 재시도되며 403이 나는 케이스를 막기
+    위해 overwrites를 켠다.
+    """
     import yt_dlp
     TMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     safe = re.sub(r"[^\w\-]+", "_", basename).strip("_")
@@ -154,10 +163,16 @@ def download_youtube_audio(url: str, basename: str) -> Path:
     opts = {
         "format": "bestaudio[ext=m4a]/bestaudio",
         "outtmpl": out_template,
-        "quiet": True,
-        "no_warnings": True,
         "noprogress": True,
-        "overwrites": False,
+        "overwrites": True,
+        "retries": 5,
+        "fragment_retries": 5,
+        "extractor_retries": 3,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["web_safari", "ios", "android_vr", "tv"],
+            },
+        },
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
