@@ -1,0 +1,76 @@
+{
+  "supernova__aespa": {
+    "metadata": {
+      "title": "Supernova",
+      "artist": "aespa",
+      "branch": "known",
+      "genius_url": "https://genius.com/Aespa-supernova-lyrics",
+      "audio_source": "aespa_Supernova.m4a"
+    },
+    "live_features": {
+      "duration": 30.000453514739228,
+      "tempo": 117.45383522727273,
+      "energy": 1.0,
+      "valence": 0.33766925342958043,
+      "danceability": 0.7609336481293504,
+      "key": 4,
+      "harmonic_ratio": 0.6665787818700852,
+      "dynamics_range": 4.091363430023193,
+      "_source": "librosa"
+    },
+    "concept_features": {
+      "sonic_texture": "Synth-pop",
+      "narrative_archetype": "Cyberpunk",
+      "visual_symbols": [
+        "Supernova",
+        "Tick-tick bomb",
+        "Portal"
+      ],
+      "color_palette": {
+        "main": "#8A2BE2",
+        "sub": [
+          "#FFD700",
+          "#000033"
+        ]
+      },
+      "reasoning_brief": "높은 에너지와 신스 사운드를 기반으로 한 'Synth-pop' 텍스처를 지닌다. 가사의 우주적, 미래적, 폭발적 요소는 'Cyberpunk' 서사를 형성하며, 슈퍼노바, 시한폭탄, 포털이 주요 시각 상징이다. 색상은 높은 에너지와 중간 정도의 밸런스를 반영하여 깊은 일렉트릭 퍼플을 메인으로, 폭발적인 빛을 상징하는 골드와 우주의 심연을 나타내는 짙은 남색을 서브 컬러로 선정했다."
+    }
+  },
+  "사랑쪽지__세븐틴": {
+    "metadata": {
+      "title": "사랑쪽지",
+      "artist": "세븐틴",
+      "branch": "known",
+      "genius_url": "https://genius.com/Seventeen-love-letter-lyrics",
+      "audio_source": "세븐틴_사랑쪽지.m4a"
+    },
+    "live_features": {
+      "duration": 30.000453514739228,
+      "tempo": 89.10290948275862,
+      "energy": 1.0,
+      "valence": 0.40709018115940226,
+      "danceability": 0.6514136365284222,
+      "key": 4,
+      "harmonic_ratio": 0.582876290072504,
+      "dynamics_range": 6.144679546356201,
+      "_source": "librosa"
+    },
+    "concept_features": {
+      "sonic_texture": "Synth-pop",
+      "narrative_archetype": "High-teen",
+      "visual_symbols": [
+        "쪽지",
+        "하늘",
+        "펜"
+      ],
+      "color_palette": {
+        "main": "#7FCFFC",
+        "sub": [
+          "#FFDAB9",
+          "#F5F5DC"
+        ]
+      },
+      "reasoning_brief": "제목과 가사에서 드러나는 풋풋하고 진심 어린 고백, 미래에 대한 희망이 'High-teen' 내러티브와 잘 맞습니다. 높은 에너지와 하늘, 바람 등의 시각적 요소는 밝고 경쾌한 'Synth-pop' 질감과 연결됩니다. 쪽지, 하늘, 펜은 가사의 핵심적인 시각적 상징이며, 색상은 높은 에너지와 희망적인 분위기를 반영하되, 약간의 서툰 감성을 담아 밝고 부드러운 톤으로 구성했습니다."
+    }
+  }
+}
