@@ -54,6 +54,10 @@ backend/models/*.pkl
 *_analysis/
 *_stems/
 output*.png
+# music_analysis/는 모듈/노트북 디렉토리이므로 위 규칙에서 예외
+!music_analysis/
+!music_analysis/**
+music_analysis/output*.png
 
 # 샘플 폴더는 구조만 유지, 큰 파일은 제외
 samples/*
