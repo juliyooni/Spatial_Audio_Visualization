@@ -146,21 +146,8 @@ def download_itunes_preview(title: str, artist: str) -> Optional[Path]:
     return out
 
 
-def download_youtube_audio(url: str, basename: str) -> Path:
-    """YouTube에서 오디오만 받아온다.
-
-    YouTube의 player API는 client 종류에 따라 다른 stream URL을 발급하고,
-    그중 일부는 곧바로 403을 뱉는다. yt-dlp 기본값(android_vr 단일)으로 막히는
-    경우가 잦아 web_safari / ios / tv 등 여러 client를 fallback chain으로
-    걸어두면 안정성이 크게 올라간다. 또한 같은 basename의 부분 파일이 남아
-    있을 때 resume이 만료된 토큰으로 재시도되며 403이 나는 케이스를 막기
-    위해 overwrites를 켠다.
-    """
-    import yt_dlp
-    TMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r"[^\w\-]+", "_", basename).strip("_")
-    out_template = str(TMP_AUDIO_DIR / f"{safe}.%(ext)s")
-    opts = {
+def _ytdlp_base_opts(out_template: str) -> dict:
+    return {
         "format": "bestaudio[ext=m4a]/bestaudio",
         "outtmpl": out_template,
         "noprogress": True,
@@ -170,13 +157,54 @@ def download_youtube_audio(url: str, basename: str) -> Path:
         "extractor_retries": 3,
         "extractor_args": {
             "youtube": {
+                # web_safari를 맨 앞 — PO Token 없이도 비교적 안정적인 stream URL 발급
                 "player_client": ["web_safari", "ios", "android_vr", "tv"],
             },
         },
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return Path(ydl.prepare_filename(info))
+
+
+def download_youtube_audio(url: str, basename: str) -> Path:
+    """YouTube에서 오디오만 받아온다.
+
+    같은 IP에서 짧은 시간 내 반복 요청하면 throttle로 stream URL이 403을
+    뱉는 패턴이 있다. 그래서:
+
+      1) 쿠키 없이 시도 (가벼운 케이스에서 통과)
+      2) 실패 시 사용자 브라우저(Safari → Chrome → Firefox) 쿠키로 재시도
+         로그인 세션이 잡히면 throttle이 거의 풀린다.
+      3) 모두 실패하면 마지막 예외를 그대로 올린다.
+    """
+    import yt_dlp
+    TMP_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^\w\-]+", "_", basename).strip("_")
+    out_template = str(TMP_AUDIO_DIR / f"{safe}.%(ext)s")
+    base = _ytdlp_base_opts(out_template)
+
+    attempts: list[tuple[Optional[str], str]] = [
+        (None, "no-cookies"),
+        ("safari", "safari cookies"),
+        ("chrome", "chrome cookies"),
+        ("firefox", "firefox cookies"),
+    ]
+
+    last_err: Optional[Exception] = None
+    for browser, label in attempts:
+        opts = dict(base)
+        if browser is not None:
+            opts["cookiesfrombrowser"] = (browser,)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return Path(ydl.prepare_filename(info))
+        except Exception as e:
+            last_err = e
+            print(f"[yt-dlp] {label} 실패: {type(e).__name__}: {e}")
+            continue
+
+    raise RuntimeError(
+        f"YouTube 다운로드 실패 — 쿠키 fallback도 모두 실패: {last_err}"
+    )
 
 
 def acquire_audio(title: str, artist: str, youtube_url: Optional[str] = None) -> Path:
