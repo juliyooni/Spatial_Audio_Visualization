@@ -1,10 +1,11 @@
-"""Spatial Audio Visualization — 통합 Streamlit 앱.
+"""Spatial Audio Visualization — K-pop 통합 분석 Streamlit 앱.
 
-사이드바에서 4가지 도구를 전환:
-  1. 음원 분리         — 채널/트랙 단위로 음원을 쪼갠다 (Demucs)
-  2. 음악 분석          — 피치 / 구조 경계 / 분위기 (Librosa)
-  3. K-pop Visual Mapping — Genius + Gemini로 비주얼 컨셉 JSON 생성
-  4. 시각 컨셉 DB       — 캐시된 비주얼 매핑 결과 열람
+메인 페이지에서 (음원 파일 + 곡 제목 + 아티스트 + 옵션 YouTube URL)을 한 번
+입력하면 체크된 파이프라인이 순차 실행되고, 결과는 탭에서 조회한다:
+  - 🎼 음악 분석 — 피치 / 구조 경계 / 분위기 (Librosa)
+  - 🎧 음원 분리 — 채널 / 트랙(Demucs) — 결과 탭에서 프리셋 변경 가능
+  - 🌌 Visual Mapping — Librosa + Genius + Gemini로 비주얼 컨셉 JSON
+  - 📚 캐시 DB — 과거 Visual Mapping 결과 열람
 
 실행: streamlit run streamlit_app.py
 """
@@ -188,29 +189,19 @@ def apply_preset(stems: dict[str, np.ndarray], preset: dict[str, list[str]]) -> 
     return out
 
 
-def page_audio_splitter():
-    st.title("🎧 음원 분리")
-    st.caption("음원 파일을 채널(L/R/Mid/Side) 또는 트랙(보컬/멜로디/비트) 단위로 분리합니다.")
-
-    uploaded = st.file_uploader(
-        "음원 파일 업로드",
-        type=[ext.lstrip(".") for ext in SUPPORTED_EXTS],
-        key="splitter_uploader",
-        help=f"지원 포맷: {', '.join(SUPPORTED_EXTS)}",
-    )
-    if uploaded is None:
-        st.info("음원 파일을 업로드하세요.")
+def tab_audio_splitter():
+    """음원 분리 결과 탭. 미리 계산된 채널/Demucs stem을 session에서 읽는다."""
+    bundle = st.session_state.get("run_bundle", {})
+    splitter = bundle.get("splitter")
+    if not splitter:
+        st.info("음원 분리가 실행되지 않았습니다. 메인 페이지에서 '음원 분리'를 체크하고 실행하세요.")
         return
 
-    input_path = save_uploaded(uploaded)
-    stem_name = Path(uploaded.name).stem
-
-    with st.spinner("오디오 로딩 중..."):
-        try:
-            audio, sr = load_audio_stereo(input_path)
-        except Exception as e:
-            st.error(f"오디오 로딩 실패: {e}")
-            return
+    audio = splitter["audio"]
+    sr = splitter["sr"]
+    stem_name = splitter["stem"]
+    demucs_stems = splitter.get("demucs_stems")  # None이면 트랙 분리는 skip된 상태
+    out_sr = splitter.get("demucs_sr") or sr
 
     duration = audio.shape[1] / sr
     c1, c2, c3 = st.columns(3)
@@ -218,12 +209,14 @@ def page_audio_splitter():
     c2.metric("샘플레이트", f"{sr} Hz")
     c3.metric("채널", audio.shape[0])
 
-    st.audio(uploaded.getvalue() if hasattr(uploaded, "getvalue") else input_path)
     st.divider()
 
+    mode_options = ["채널 분리 (L / R / Mid / Side)"]
+    if demucs_stems is not None:
+        mode_options.append("트랙 분리 (보컬 / 멜로디 / 비트)")
     mode = st.radio(
         "분리 방식",
-        ["채널 분리 (L / R / Mid / Side)", "트랙 분리 (보컬 / 멜로디 / 비트)"],
+        mode_options,
         horizontal=True,
         key="splitter_mode",
     )
@@ -241,24 +234,23 @@ def page_audio_splitter():
                 "side": "Side (L-R)/2",
             }[x],
         )
-        if st.button("분리 실행", type="primary", disabled=len(channel_opts) == 0, key="splitter_run_ch"):
-            splits = split_channels(audio)
-            st.session_state["splitter_results"] = {k: splits[k] for k in channel_opts}
-            st.session_state["splitter_results_sr"] = sr
-            st.session_state["splitter_stem"] = stem_name
-            st.session_state["splitter_mode_key"] = "channel"
+        if not channel_opts:
+            st.info("채널을 하나 이상 선택하세요.")
+            return
+        splits = split_channels(audio)
+        results = {k: splits[k] for k in channel_opts}
+        results_sr = sr
+        mode_key = "channel"
 
     else:
         st.subheader("트랙 분리")
-        st.caption("Meta Demucs v4 (htdemucs). 첫 실행 시 모델 다운로드(~80MB).")
-
+        st.caption("Meta Demucs v4 (htdemucs). 결과는 미리 계산되어 있어 프리셋만 바꾸면 즉시 합쳐집니다.")
         preset_name = st.selectbox(
             "추출할 트랙 조합 선택",
             list(TRACK_PRESETS.keys()),
             index=0,
         )
         preset = TRACK_PRESETS[preset_name]
-
         with st.expander("이 프리셋이 뽑아주는 트랙", expanded=False):
             stem_labels = {
                 "vocals": "보컬", "drums": "드럼", "bass": "베이스",
@@ -267,71 +259,50 @@ def page_audio_splitter():
             for out_name, stem_list in preset.items():
                 desc = " + ".join(stem_labels[s] for s in stem_list)
                 st.markdown(f"- **{out_name}**: {desc}")
+        results = apply_preset(demucs_stems, preset)
+        results_sr = out_sr
+        mode_key = "track"
 
-        if st.button("분리 실행", type="primary", key="splitter_run_track"):
-            prog = st.progress(0.0, text="시작")
-            try:
-                with st.spinner("트랙 분리 중... (곡 길이에 따라 수십 초~수 분)"):
-                    stems = separate_stems(audio, sr, progress_cb=lambda p, m: prog.progress(p, text=m))
-            except Exception as e:
-                st.error(f"분리 실패: {e}")
-                return
-            out_sr = stems.pop("_sr")
-            st.session_state["splitter_results"] = apply_preset(stems, preset)
-            st.session_state["splitter_results_sr"] = out_sr
-            st.session_state["splitter_stem"] = stem_name
-            st.session_state["splitter_mode_key"] = "track"
-            prog.empty()
+    st.divider()
+    st.subheader("결과")
 
-    if "splitter_results" in st.session_state:
-        st.divider()
-        st.subheader("결과")
-        results = st.session_state["splitter_results"]
-        out_sr = st.session_state["splitter_results_sr"]
-        stem = st.session_state["splitter_stem"]
-        mode_key = st.session_state["splitter_mode_key"]
+    label_map = {
+        "left": "Left", "right": "Right", "mid": "Mid", "side": "Side",
+        "vocals": "Vocals (보컬)",
+        "melody": "Melody (멜로디 악기)",
+        "drums": "Drums (비트)",
+        "bass": "Bass (베이스)",
+        "instrumental": "Instrumental (반주 — 보컬 제외)",
+    }
 
-        label_map = {
-            "left": "Left", "right": "Right", "mid": "Mid", "side": "Side",
-            "vocals": "Vocals (보컬)",
-            "melody": "Melody (멜로디 악기)",
-            "drums": "Drums (비트)",
-            "bass": "Bass (베이스)",
-            "instrumental": "Instrumental (반주 — 보컬 제외)",
-        }
-
-        for key, data in results.items():
-            st.markdown(f"**{label_map.get(key, key)}**")
-            audio_out = wav_bytes(data, out_sr)
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.audio(audio_out, format="audio/wav")
-            with col2:
-                st.download_button(
-                    "⬇ WAV",
-                    data=audio_out,
-                    file_name=f"{stem}_{key}.wav",
-                    mime="audio/wav",
-                    key=f"dl_split_{key}",
-                )
-
-        if len(results) > 1:
-            zip_buf = io.BytesIO()
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for key, data in results.items():
-                    zf.writestr(f"{stem}_{key}.wav", wav_bytes(data, out_sr))
+    for key, data in results.items():
+        st.markdown(f"**{label_map.get(key, key)}**")
+        audio_out = wav_bytes(data, results_sr)
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            st.audio(audio_out, format="audio/wav")
+        with col2:
             st.download_button(
-                "📦 전체 ZIP 다운로드",
-                data=zip_buf.getvalue(),
-                file_name=f"{stem}_{mode_key}_stems.zip",
-                mime="application/zip",
-                type="primary",
+                "⬇ WAV",
+                data=audio_out,
+                file_name=f"{stem_name}_{key}.wav",
+                mime="audio/wav",
+                key=f"dl_split_{mode_key}_{key}",
             )
 
-    try:
-        os.unlink(input_path)
-    except OSError:
-        pass
+    if len(results) > 1:
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for key, data in results.items():
+                zf.writestr(f"{stem_name}_{key}.wav", wav_bytes(data, results_sr))
+        st.download_button(
+            "📦 전체 ZIP 다운로드",
+            data=zip_buf.getvalue(),
+            file_name=f"{stem_name}_{mode_key}_stems.zip",
+            mime="application/zip",
+            type="primary",
+            key=f"dl_zip_{mode_key}",
+        )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -731,45 +702,20 @@ def _wavesurfer_player(
     components.html(html, height=height + 100, scrolling=False)
 
 
-def page_music_analysis():
-    from music_analysis.pipeline import analyze_track, export_result
+def tab_music_analysis():
+    """음악 분석 결과 탭. 미리 계산된 result를 session에서 읽는다."""
+    from music_analysis.pipeline import export_result
 
-    st.title("🎼 음악 분석 파이프라인")
-    st.caption("피치(pYIN) · 구조 경계(라플라시안 분해) · 분위기(valence/energy/tension)를 한번에 추출합니다.")
-
-    uploaded = st.file_uploader(
-        "음원 파일 업로드 (.wav / .flac / .mp3)",
-        type=["wav", "flac", "mp3"],
-        key="analysis_uploader",
-    )
-    if uploaded is None:
-        st.info("분석할 음원을 업로드하세요.")
-        return
-
-    input_path = save_uploaded(uploaded)
-    audio_raw = uploaded.getvalue() if hasattr(uploaded, "getvalue") else Path(input_path).read_bytes()
-
-    if st.button("분석 실행", type="primary", key="analysis_run"):
-        prog = st.progress(0.0, text="시작")
-        try:
-            with st.spinner("분석 중... (곡 길이에 따라 수십 초~수 분)"):
-                result = analyze_track(input_path, progress_cb=lambda p, m: prog.progress(p, text=m))
-        except Exception as e:
-            st.error(f"분석 실패: {e}")
-            return
-        prog.empty()
-        st.session_state["analysis_result"] = result
-        st.session_state["analysis_filename"] = uploaded.name
-        st.session_state["analysis_audio_bytes"] = audio_raw
-        st.session_state["analysis_audio_mime"] = uploaded.type or "audio/wav"
-
-    result = st.session_state.get("analysis_result")
+    bundle = st.session_state.get("run_bundle", {})
+    result = bundle.get("analysis")
     if result is None:
-        # 분석 전에는 단순 플레이어만 노출
-        st.audio(audio_raw)
+        st.info("음악 분석이 실행되지 않았습니다. 메인 페이지에서 '음악 분석'을 체크하고 실행하세요.")
         return
 
-    st.divider()
+    audio_bytes = bundle.get("audio_bytes")
+    audio_mime = bundle.get("audio_mime") or "audio/wav"
+    filename = bundle.get("filename") or Path(result.get("path", "audio.wav")).name
+
     st.subheader("개요")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("길이", f"{result['duration_sec']:.1f} s")
@@ -796,8 +742,8 @@ def page_music_analysis():
     st.caption("파형 위에서 클릭하면 점프 · 섹션/구간을 클릭해도 점프 · 빨간선=구조, 파란선=분위기.")
     try:
         _wavesurfer_player(
-            audio_bytes=st.session_state["analysis_audio_bytes"],
-            audio_mime=st.session_state.get("analysis_audio_mime") or "audio/wav",
+            audio_bytes=audio_bytes,
+            audio_mime=audio_mime,
             duration=float(result["duration_sec"]),
             struct_bounds=result["segmentation"]["boundary_times"],
             mood_bounds=result["mood"]["mood_boundaries"]["times"],
@@ -807,7 +753,8 @@ def page_music_analysis():
         )
     except Exception as e:
         st.warning(f"플레이어 로드 실패: {e}")
-        st.audio(st.session_state["analysis_audio_bytes"])
+        if audio_bytes:
+            st.audio(audio_bytes)
 
     # ─── Plotly 인터랙티브 차트 ───
     st.subheader("상세 차트")
@@ -849,10 +796,10 @@ def page_music_analysis():
     if st.button("ZIP 생성", key="analysis_export"):
         with st.spinner("CSV/WAV 생성 중..."):
             with tempfile.TemporaryDirectory() as tmpdir:
-                # export_result는 result["path"]의 stem을 파일명으로 사용
-                # 업로드 파일명으로 보이도록 path 임시 교체
+                # export_result는 result["path"]의 stem을 파일명으로 사용.
+                # 업로드 파일명으로 보이도록 path 임시 교체.
                 orig_path = result["path"]
-                pretty_stem = Path(st.session_state.get("analysis_filename", orig_path)).stem
+                pretty_stem = Path(filename).stem
                 fake_path = os.path.join(tmpdir, f"{pretty_stem}{Path(orig_path).suffix}")
                 result["path"] = fake_path
                 try:
@@ -875,11 +822,6 @@ def page_music_analysis():
             mime="application/zip",
             type="primary",
         )
-
-    try:
-        os.unlink(input_path)
-    except OSError:
-        pass
 
 
 # ══════════════════════════════════════════════════════════════
@@ -949,94 +891,209 @@ def _render_visual_concept(result: dict):
         st.code(json.dumps(result, ensure_ascii=False, indent=2), language="json")
 
 
-def page_visual_mapping():
-    from music_analysis import visual_mapping as vm
-
-    st.title("🌌 K-pop Visual Mapping")
-    st.caption("iTunes/YouTube에서 음원 30초 → Librosa feature → Genius 가사(있으면) → Gemini 분류 JSON.")
-
-    genius_token, gemini_key = vm.load_env()
-    with st.expander("API 키 상태", expanded=not (genius_token and gemini_key)):
-        st.write({"GENIUS_ACCESS_TOKEN": bool(genius_token), "GEMINI_API_KEY": bool(gemini_key)})
-        if not (genius_token and gemini_key):
-            st.warning("프로젝트 루트의 `.env`에 키를 넣어주세요. `.env.example` 참고.")
-
-    with st.form("vm_form"):
-        c1, c2 = st.columns(2)
-        with c1:
-            title = st.text_input("곡 제목", placeholder="예: Supernova")
-        with c2:
-            artist = st.text_input("아티스트", placeholder="예: aespa")
-        youtube_url = st.text_input(
-            "YouTube URL (선택 — iTunes에 없거나 신곡일 때)",
-            placeholder="https://youtu.be/...",
-        )
-        c3, c4 = st.columns([1, 1])
-        with c3:
-            force = st.checkbox("캐시 무시하고 새로 처리", value=False)
-        with c4:
-            submitted = st.form_submit_button("실행", type="primary", use_container_width=True)
-
-    if submitted:
-        if not title.strip() or not artist.strip():
-            st.error("곡 제목과 아티스트는 필수입니다.")
-        else:
-            prog = st.progress(0.0, text="시작")
-            try:
-                with st.spinner("처리 중..."):
-                    result = vm.process_kpop_visualization(
-                        title.strip(),
-                        artist.strip(),
-                        youtube_url=youtube_url.strip() or None,
-                        force_refresh=force,
-                        progress_cb=lambda p, m: prog.progress(p, text=m),
-                    )
-                st.session_state["vm_last_result"] = result
-                st.success("완료. 결과는 `music_analysis/kpop_visual_db.json`에 캐시됩니다.")
-            except Exception as e:
-                st.error(f"실패: {e}")
-            finally:
-                prog.empty()
-
-    result = st.session_state.get("vm_last_result")
-    if result is not None:
-        st.divider()
-        _render_visual_concept(result)
+def tab_visual_mapping():
+    """Visual Mapping 결과 탭. 미리 생성된 result를 session에서 읽는다."""
+    bundle = st.session_state.get("run_bundle", {})
+    result = bundle.get("visual")
+    if result is None:
+        st.info("Visual Mapping이 실행되지 않았습니다. 메인 페이지에서 'Visual Mapping'을 체크하고 실행하세요.")
+        return
+    _render_visual_concept(result)
 
 
 # ══════════════════════════════════════════════════════════════
 # 페이지 4 — 시각 컨셉 DB 열람
 # ══════════════════════════════════════════════════════════════
 
-def page_visual_db():
+def tab_visual_db():
     from music_analysis import visual_mapping as vm
 
-    st.title("📚 시각 컨셉 DB")
     st.caption(f"`{vm.DB_PATH.relative_to(_PROJECT_ROOT)}`에 저장된 캐시 항목.")
-
     entries = vm.list_cached()
     if not entries:
-        st.info("아직 캐시된 항목이 없습니다. K-pop Visual Mapping에서 곡을 처리하세요.")
+        st.info("아직 캐시된 항목이 없습니다. Visual Mapping을 한 번 실행하세요.")
         return
-
     options = [
         f"{e['metadata']['artist']} — {e['metadata']['title']}  ({e['metadata'].get('branch', '?')})"
         for e in entries
     ]
-    idx = st.selectbox("항목 선택", range(len(options)), format_func=lambda i: options[i])
+    idx = st.selectbox("항목 선택", range(len(options)), format_func=lambda i: options[i], key="vm_db_select")
     _render_visual_concept(entries[idx])
 
 
 # ══════════════════════════════════════════════════════════════
-# 메인 — 사이드바 네비게이션
+# 통합 실행 — 입력 → 선택된 파이프라인 순차 실행 → 결과 번들
 # ══════════════════════════════════════════════════════════════
 
-PAGES = {
-    "🎧 음원 분리": page_audio_splitter,
-    "🎼 음악 분석": page_music_analysis,
-    "🌌 K-pop Visual Mapping": page_visual_mapping,
-    "📚 시각 컨셉 DB": page_visual_db,
-}
+def _run_pipelines(
+    *,
+    input_path: str,
+    audio_bytes: bytes,
+    audio_mime: str,
+    filename: str,
+    title: str,
+    artist: str,
+    youtube_url: str | None,
+    do_analysis: bool,
+    do_split: bool,
+    do_visual: bool,
+    force_visual_refresh: bool,
+) -> dict:
+    """선택된 파이프라인을 순차 실행하고 결과를 한 dict로 묶어 반환.
+
+    - analysis: pipeline.analyze_track(input_path)
+    - split: load_audio_stereo(input_path) → 채널은 즉시, Demucs는 4 stem 모두 미리 분리
+    - visual: visual_mapping.process_kpop_visualization(audio_path=input_path)
+    """
+    bundle: dict = {
+        "filename": filename,
+        "audio_bytes": audio_bytes,
+        "audio_mime": audio_mime,
+        "title": title,
+        "artist": artist,
+    }
+
+    # 1) 음악 분석
+    if do_analysis:
+        from music_analysis.pipeline import analyze_track
+        with st.status("🎼 음악 분석 중...", expanded=True) as s:
+            inner = st.progress(0.0, text="시작")
+            result = analyze_track(input_path, progress_cb=lambda p, m: inner.progress(p, text=m))
+            bundle["analysis"] = result
+            s.update(label="🎼 음악 분석 완료", state="complete")
+
+    # 2) 음원 분리
+    if do_split:
+        with st.status("🎧 음원 분리 (채널 + Demucs 4-stem)...", expanded=True) as s:
+            inner = st.progress(0.0, text="오디오 로딩")
+            audio, sr = load_audio_stereo(input_path)
+            inner.progress(0.1, text="채널 분리는 즉시 가능 / Demucs 분리 시작")
+            try:
+                stems = separate_stems(audio, sr, progress_cb=lambda p, m: inner.progress(0.1 + 0.9 * p, text=m))
+                demucs_sr = stems.pop("_sr")
+            except Exception as e:
+                st.warning(f"Demucs 분리 실패 — 채널 분리만 사용 가능: {e}")
+                stems = None
+                demucs_sr = sr
+            bundle["splitter"] = {
+                "audio": audio,
+                "sr": sr,
+                "stem": Path(filename).stem,
+                "demucs_stems": stems,
+                "demucs_sr": demucs_sr,
+            }
+            s.update(label="🎧 음원 분리 완료", state="complete")
+
+    # 3) Visual Mapping
+    if do_visual:
+        from music_analysis import visual_mapping as vm
+        with st.status("🌌 Visual Mapping (Genius + Gemini)...", expanded=True) as s:
+            inner = st.progress(0.0, text="시작")
+            try:
+                result = vm.process_kpop_visualization(
+                    title.strip(),
+                    artist.strip(),
+                    audio_path=input_path,
+                    youtube_url=youtube_url.strip() if youtube_url else None,
+                    force_refresh=force_visual_refresh,
+                    progress_cb=lambda p, m: inner.progress(p, text=m),
+                )
+                bundle["visual"] = result
+                s.update(label="🌌 Visual Mapping 완료", state="complete")
+            except Exception as e:
+                s.update(label=f"🌌 Visual Mapping 실패: {e}", state="error")
+
+    return bundle
+
+
+def _input_form():
+    """메인 입력 폼. 제출되면 선택된 파이프라인을 즉시 실행한다."""
+    from music_analysis import visual_mapping as vm
+
+    st.title("🎧 Spatial Audio Visualization")
+    st.caption("K-pop 트랙을 한 번에 분석·분리·시각 매핑.")
+
+    with st.expander("🔑 API 키 상태 (Visual Mapping용)", expanded=False):
+        genius_token, gemini_key = vm.load_env()
+        st.write({"GENIUS_ACCESS_TOKEN": bool(genius_token), "GEMINI_API_KEY": bool(gemini_key)})
+        if not (genius_token and gemini_key):
+            st.warning("Visual Mapping을 사용하려면 `.env`에 두 키를 넣어야 합니다. `.env.example` 참고.")
+
+    with st.form("main_input"):
+        uploaded = st.file_uploader(
+            "음원 파일",
+            type=[ext.lstrip(".") for ext in SUPPORTED_EXTS],
+            help=f"지원 포맷: {', '.join(SUPPORTED_EXTS)}",
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            title = st.text_input("곡 제목", placeholder="예: Supernova")
+        with c2:
+            artist = st.text_input("아티스트", placeholder="예: aespa")
+        youtube_url = st.text_input(
+            "YouTube URL (선택 — Visual Mapping에서 iTunes fallback이 필요할 때)",
+            placeholder="https://youtu.be/...",
+        )
+
+        st.markdown("**실행할 파이프라인**")
+        cc1, cc2, cc3, cc4 = st.columns(4)
+        with cc1:
+            do_analysis = st.checkbox("🎼 음악 분석", value=True, help="피치 / 구조 경계 / 분위기")
+        with cc2:
+            do_split = st.checkbox("🎧 음원 분리", value=True, help="채널 + Demucs 4-stem")
+        with cc3:
+            do_visual = st.checkbox("🌌 Visual Mapping", value=True, help="Genius + Gemini 분류")
+        with cc4:
+            force_visual = st.checkbox("Visual 캐시 무시", value=False)
+
+        submitted = st.form_submit_button("실행", type="primary", use_container_width=True)
+
+    if not submitted:
+        return False
+
+    # 검증
+    errors = []
+    if uploaded is None:
+        errors.append("음원 파일을 업로드하세요.")
+    if not title.strip() or not artist.strip():
+        errors.append("곡 제목과 아티스트는 필수입니다.")
+    if not (do_analysis or do_split or do_visual):
+        errors.append("최소 한 개의 파이프라인을 선택하세요.")
+    if errors:
+        for e in errors:
+            st.error(e)
+        return False
+
+    # 실행
+    input_path = save_uploaded(uploaded)
+    audio_bytes = uploaded.getvalue() if hasattr(uploaded, "getvalue") else Path(input_path).read_bytes()
+    audio_mime = uploaded.type or "audio/wav"
+
+    try:
+        bundle = _run_pipelines(
+            input_path=input_path,
+            audio_bytes=audio_bytes,
+            audio_mime=audio_mime,
+            filename=uploaded.name,
+            title=title.strip(),
+            artist=artist.strip(),
+            youtube_url=youtube_url,
+            do_analysis=do_analysis,
+            do_split=do_split,
+            do_visual=do_visual,
+            force_visual_refresh=force_visual,
+        )
+    finally:
+        try:
+            os.unlink(input_path)
+        except OSError:
+            pass
+
+    st.session_state["run_bundle"] = bundle
+    # 새 ZIP 캐시 초기화 (이전 분석의 export ZIP이 남아있을 수 있음)
+    st.session_state.pop("analysis_zip", None)
+    st.session_state.pop("analysis_zip_name", None)
+    return True
 
 
 def main():
@@ -1046,26 +1103,32 @@ def main():
         layout="wide",
     )
 
-    with st.sidebar:
-        st.markdown("## Spatial Audio")
-        st.caption("음원을 분리·분석하고 비주얼 컨셉으로 매핑합니다.")
-        st.divider()
-        choice = st.radio(
-            "도구",
-            list(PAGES.keys()),
-            key="page_choice",
-            label_visibility="collapsed",
-        )
-        st.divider()
-        with st.expander("이 도구는?"):
-            st.markdown(
-                "- **음원 분리** — 채널(L/R/Mid/Side) 또는 트랙(보컬/멜로디/베이스/비트)으로 쪼갭니다.\n"
-                "- **음악 분석** — 피치 궤적, 구조 경계, 섹션별 분위기를 추출.\n"
-                "- **K-pop Visual Mapping** — Genius+Gemini로 비주얼 컨셉 JSON 생성.\n"
-                "- **시각 컨셉 DB** — 캐시된 매핑 결과 열람.\n"
-            )
+    just_ran = _input_form()
 
-    PAGES[choice]()
+    bundle = st.session_state.get("run_bundle")
+    if bundle is None:
+        st.info("위 폼을 채우고 '실행'을 눌러 분석을 시작하세요.")
+        return
+
+    if just_ran:
+        st.success(f"✅ '{bundle['title']} — {bundle['artist']}' 처리 완료. 아래 탭에서 결과를 확인하세요.")
+
+    st.divider()
+
+    tab_analysis, tab_split, tab_visual, tab_db = st.tabs([
+        "🎼 음악 분석",
+        "🎧 음원 분리",
+        "🌌 Visual Mapping",
+        "📚 캐시 DB",
+    ])
+    with tab_analysis:
+        tab_music_analysis()
+    with tab_split:
+        tab_audio_splitter()
+    with tab_visual:
+        tab_visual_mapping()
+    with tab_db:
+        tab_visual_db()
 
 
 if __name__ == "__main__":
