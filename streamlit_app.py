@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import os
@@ -22,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 import streamlit as st
+import streamlit.components.v1 as components
 
 # 모듈 import 가능하도록 PROJECT_ROOT를 sys.path에 추가
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -401,6 +403,334 @@ def _plot_analysis(result: dict):
     return fig
 
 
+def _plotly_analysis(result: dict, show_struct: bool, show_mood: bool):
+    """Plotly 3행 인터랙티브 차트 — 파형(다운샘플) / 피치 / novelty.
+
+    matplotlib 백업 플롯과 같은 정보를 보여주되 줌·팬·호버가 가능하도록.
+    재생 위치 동기화는 별도의 WaveSurfer 위젯에서 처리.
+    """
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    y = result["_audio"]["mono"]
+    sr = result["_audio"]["sr"]
+    pitch = result["pitch"]
+    sections = result["mood"]["sections"]
+    struct_bounds = result["segmentation"]["boundary_times"]
+    mood_bounds = result["mood"]["mood_boundaries"]["times"]
+    novelty = result["mood"]["mood_boundaries"]["novelty"]
+    nov_times = result["mood"]["mood_boundaries"]["frame_times"]
+    duration = result["duration_sec"]
+
+    # 파형은 픽셀 수 정도로 다운샘플 — 5분 곡도 가볍게 그릴 수 있게
+    target_pts = 4000
+    if len(y) > target_pts:
+        step = len(y) // target_pts
+        wf_y = y[::step]
+        wf_t = np.arange(len(wf_y)) * step / sr
+    else:
+        wf_y = y
+        wf_t = np.arange(len(wf_y)) / sr
+
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True,
+        vertical_spacing=0.05,
+        row_heights=[0.4, 0.3, 0.3],
+        subplot_titles=("Waveform + sections", "Pitch contour (pYIN)", "Mood novelty"),
+    )
+
+    # 섹션 음영 (구조 경계 기준)
+    palette = [
+        "rgba(31,119,180,0.10)", "rgba(255,127,14,0.10)", "rgba(44,160,44,0.10)",
+        "rgba(214,39,40,0.10)", "rgba(148,103,189,0.10)", "rgba(140,86,75,0.10)",
+        "rgba(227,119,194,0.10)", "rgba(127,127,127,0.10)", "rgba(188,189,34,0.10)",
+        "rgba(23,190,207,0.10)",
+    ]
+    for s in sections:
+        fig.add_vrect(
+            x0=s["start"], x1=s["end"],
+            fillcolor=palette[s["section_idx"] % len(palette)],
+            line_width=0, layer="below",
+            row=1, col=1,
+        )
+        fig.add_annotation(
+            x=(s["start"] + s["end"]) / 2,
+            y=1, yref="y domain",
+            text=f"#{s['section_idx']} · {s['mood_label']}",
+            showarrow=False, yanchor="top",
+            font=dict(size=10, color="#444"),
+            bgcolor="rgba(255,255,255,0.7)",
+            bordercolor="#bbb", borderwidth=1,
+            row=1, col=1,
+        )
+
+    # 파형
+    fig.add_trace(
+        go.Scatter(
+            x=wf_t, y=wf_y, mode="lines",
+            line=dict(color="#888", width=1),
+            name="waveform", hoverinfo="skip", showlegend=False,
+        ),
+        row=1, col=1,
+    )
+
+    # 피치
+    f0 = pitch["f0_hz"]
+    fig.add_trace(
+        go.Scatter(
+            x=pitch["times"], y=f0, mode="lines",
+            line=dict(color="#1f77b4", width=1),
+            name="f0", hovertemplate="t=%{x:.2f}s<br>f0=%{y:.1f} Hz<extra></extra>",
+            showlegend=False,
+        ),
+        row=2, col=1,
+    )
+    valid = f0[~np.isnan(f0)] if f0.size else f0
+    if valid.size:
+        fig.update_yaxes(type="log", row=2, col=1)
+
+    # Mood novelty
+    fig.add_trace(
+        go.Scatter(
+            x=nov_times, y=novelty, mode="lines",
+            line=dict(color="#4169e1", width=1.4),
+            name="novelty",
+            hovertemplate="t=%{x:.2f}s<br>novelty=%{y:.2f}<extra></extra>",
+            showlegend=False,
+            fill="tozeroy", fillcolor="rgba(65,105,225,0.10)",
+        ),
+        row=3, col=1,
+    )
+
+    # 경계선 — 모든 row에 vline
+    if show_struct:
+        for b in struct_bounds:
+            fig.add_vline(x=b, line=dict(color="crimson", width=1.2, dash="dash"), opacity=0.7)
+    if show_mood:
+        for b in mood_bounds:
+            fig.add_vline(x=b, line=dict(color="royalblue", width=1.2, dash="dot"), opacity=0.8)
+
+    fig.update_layout(
+        height=620, margin=dict(l=50, r=20, t=40, b=40),
+        hovermode="x unified",
+        plot_bgcolor="white",
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)", range=[0, duration])
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(0,0,0,0.05)")
+    fig.update_yaxes(title_text="amp", row=1, col=1)
+    fig.update_yaxes(title_text="f0 (Hz)", row=2, col=1)
+    fig.update_yaxes(title_text="novelty", row=3, col=1)
+    fig.update_xaxes(title_text="time (s)", row=3, col=1)
+    return fig
+
+
+def _wavesurfer_player(
+    audio_bytes: bytes,
+    audio_mime: str,
+    duration: float,
+    struct_bounds: list[float],
+    mood_bounds: list[float],
+    sections: list[dict],
+    show_struct: bool,
+    show_mood: bool,
+    height: int = 220,
+):
+    """WaveSurfer.js로 파형 + 재생 커서 + 경계 region을 그린다.
+
+    오디오는 base64 data URL로 임베드 (Streamlit components iframe은 별도 origin이라
+    파일 시스템 접근 불가). 곡이 길수록 페이로드가 커지므로 K-pop 길이(3~4분)에선 OK.
+    """
+    b64 = base64.b64encode(audio_bytes).decode("ascii")
+    data_url = f"data:{audio_mime};base64,{b64}"
+
+    # JS에 넘길 데이터
+    payload = {
+        "audio": data_url,
+        "duration": duration,
+        "struct": [float(b) for b in struct_bounds] if show_struct else [],
+        "mood": [float(b) for b in mood_bounds] if show_mood else [],
+        "sections": [
+            {
+                "start": float(s["start"]),
+                "end": float(s["end"]),
+                "idx": int(s["section_idx"]),
+                "label": str(s["mood_label"]),
+            }
+            for s in sections
+        ],
+    }
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #222; }}
+  #wrap {{ padding: 8px 4px; }}
+  #waveform {{ background: #f7f7f7; border-radius: 6px; }}
+  .controls {{ display: flex; gap: 8px; align-items: center; margin-top: 8px; }}
+  .controls button {{
+    background: #1f77b4; color: white; border: none; border-radius: 4px;
+    padding: 6px 14px; cursor: pointer; font-size: 13px;
+  }}
+  .controls button:hover {{ background: #145a8a; }}
+  .controls button.secondary {{ background: #888; }}
+  .controls button.secondary:hover {{ background: #555; }}
+  #time {{ font-variant-numeric: tabular-nums; font-size: 13px; color: #444; margin-left: auto; }}
+  .legend {{ font-size: 11px; color: #666; margin-top: 6px; }}
+  .legend .sw {{ display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 3px; border-radius: 2px; }}
+  #section-bar {{
+    margin-top: 6px; display: flex; gap: 2px;
+    font-size: 10px; color: #fff;
+  }}
+  #section-bar .seg {{
+    padding: 3px 6px; border-radius: 3px; cursor: pointer;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    text-shadow: 0 0 2px rgba(0,0,0,0.6);
+  }}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="waveform"></div>
+  <div id="section-bar"></div>
+  <div class="controls">
+    <button id="play">▶ Play</button>
+    <button id="restart" class="secondary">⏮ 처음으로</button>
+    <span id="time">0:00 / 0:00</span>
+  </div>
+  <div class="legend">
+    <span class="sw" style="background:crimson"></span>구조 경계
+    &nbsp;&nbsp;
+    <span class="sw" style="background:royalblue"></span>분위기 경계
+    &nbsp;&nbsp;섹션을 클릭하면 해당 시점으로 점프
+  </div>
+</div>
+
+<script src="https://unpkg.com/wavesurfer.js@7.8.6/dist/wavesurfer.min.js"></script>
+<script src="https://unpkg.com/wavesurfer.js@7.8.6/dist/plugins/regions.min.js"></script>
+<script src="https://unpkg.com/wavesurfer.js@7.8.6/dist/plugins/timeline.min.js"></script>
+<script>
+  const DATA = {json.dumps(payload)};
+
+  const palette = [
+    "rgba(31,119,180,0.55)", "rgba(255,127,14,0.55)", "rgba(44,160,44,0.55)",
+    "rgba(214,39,40,0.55)",  "rgba(148,103,189,0.55)","rgba(140,86,75,0.55)",
+    "rgba(227,119,194,0.55)","rgba(127,127,127,0.55)","rgba(188,189,34,0.55)",
+    "rgba(23,190,207,0.55)",
+  ];
+
+  const ws = WaveSurfer.create({{
+    container: '#waveform',
+    waveColor: '#bbb',
+    progressColor: '#1f77b4',
+    cursorColor: '#d62728',
+    cursorWidth: 2,
+    height: 100,
+    normalize: true,
+    barWidth: 2,
+    barGap: 1,
+    barRadius: 1,
+    plugins: [
+      WaveSurfer.Timeline.create({{
+        container: '#waveform',
+        primaryLabelInterval: 10,
+        secondaryLabelInterval: 5,
+        style: 'font-size: 10px; color: #777;',
+      }}),
+    ],
+  }});
+
+  const regions = ws.registerPlugin(WaveSurfer.Regions.create());
+
+  ws.load(DATA.audio);
+
+  ws.on('decode', () => {{
+    // 섹션 region (음영 + 라벨, 클릭하면 점프)
+    DATA.sections.forEach((s, i) => {{
+      regions.addRegion({{
+        start: s.start,
+        end: s.end,
+        color: palette[s.idx % palette.length].replace('0.55', '0.10'),
+        drag: false, resize: false,
+        content: '#' + s.idx + ' ' + s.label,
+      }});
+    }});
+    // 구조 경계 — 빨간 마커
+    DATA.struct.forEach(t => {{
+      regions.addRegion({{
+        start: t, end: t,
+        color: 'rgba(220,20,60,0.9)',
+        drag: false, resize: false,
+      }});
+    }});
+    // 분위기 경계 — 파란 마커
+    DATA.mood.forEach(t => {{
+      regions.addRegion({{
+        start: t, end: t,
+        color: 'rgba(65,105,225,0.9)',
+        drag: false, resize: false,
+      }});
+    }});
+
+    // 영역 클릭하면 해당 시점으로 점프
+    regions.on('region-clicked', (region, e) => {{
+      e.stopPropagation();
+      ws.setTime(region.start);
+    }});
+
+    renderSectionBar();
+  }});
+
+  function fmt(s) {{
+    if (!isFinite(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    const r = Math.floor(s % 60);
+    return m + ':' + (r < 10 ? '0' : '') + r;
+  }}
+
+  const timeEl = document.getElementById('time');
+  ws.on('timeupdate', t => {{
+    timeEl.textContent = fmt(t) + ' / ' + fmt(DATA.duration);
+  }});
+  ws.on('ready', () => {{
+    timeEl.textContent = '0:00 / ' + fmt(DATA.duration);
+  }});
+
+  const playBtn = document.getElementById('play');
+  playBtn.onclick = () => ws.playPause();
+  ws.on('play', () => playBtn.textContent = '⏸ Pause');
+  ws.on('pause', () => playBtn.textContent = '▶ Play');
+  ws.on('finish', () => playBtn.textContent = '▶ Play');
+
+  document.getElementById('restart').onclick = () => {{
+    ws.setTime(0);
+    if (!ws.isPlaying()) ws.play();
+  }};
+
+  // 섹션 바 — 클릭하면 해당 섹션 시작점으로 점프
+  function renderSectionBar() {{
+    const bar = document.getElementById('section-bar');
+    bar.innerHTML = '';
+    DATA.sections.forEach(s => {{
+      const seg = document.createElement('div');
+      seg.className = 'seg';
+      seg.style.background = palette[s.idx % palette.length].replace('0.55', '0.85');
+      seg.style.flex = (s.end - s.start);
+      seg.title = '#' + s.idx + ' · ' + s.label + ' (' + s.start.toFixed(1) + '–' + s.end.toFixed(1) + 's)';
+      seg.textContent = '#' + s.idx + ' ' + s.label;
+      seg.onclick = () => ws.setTime(s.start);
+      bar.appendChild(seg);
+    }});
+  }}
+</script>
+</body>
+</html>
+"""
+    components.html(html, height=height + 100, scrolling=False)
+
+
 def page_music_analysis():
     from music_analysis.pipeline import analyze_track, export_result
 
@@ -417,7 +747,7 @@ def page_music_analysis():
         return
 
     input_path = save_uploaded(uploaded)
-    st.audio(uploaded.getvalue() if hasattr(uploaded, "getvalue") else input_path)
+    audio_raw = uploaded.getvalue() if hasattr(uploaded, "getvalue") else Path(input_path).read_bytes()
 
     if st.button("분석 실행", type="primary", key="analysis_run"):
         prog = st.progress(0.0, text="시작")
@@ -428,12 +758,15 @@ def page_music_analysis():
             st.error(f"분석 실패: {e}")
             return
         prog.empty()
-        # session에 저장 (NumPy 큰 배열 포함되므로 그대로 보관)
         st.session_state["analysis_result"] = result
         st.session_state["analysis_filename"] = uploaded.name
+        st.session_state["analysis_audio_bytes"] = audio_raw
+        st.session_state["analysis_audio_mime"] = uploaded.type or "audio/wav"
 
     result = st.session_state.get("analysis_result")
     if result is None:
+        # 분석 전에는 단순 플레이어만 노출
+        st.audio(audio_raw)
         return
 
     st.divider()
@@ -446,25 +779,61 @@ def page_music_analysis():
         c3.metric("피치 중앙값", f"{ps['f0_median_hz']:.0f} Hz")
         c4.metric("Voiced 비율", f"{ps['voiced_ratio']*100:.0f} %")
 
-    st.subheader("플롯")
+    # ─── 경계 토글 ───
+    st.subheader("표시할 경계")
+    boundary_choice = st.radio(
+        "어떤 경계를 표시할까요?",
+        ["둘 다", "구조 경계만", "분위기 경계만"],
+        horizontal=True,
+        key="analysis_boundary_choice",
+        label_visibility="collapsed",
+    )
+    show_struct = boundary_choice in ("둘 다", "구조 경계만")
+    show_mood = boundary_choice in ("둘 다", "분위기 경계만")
+
+    # ─── 인터랙티브 플레이어 (WaveSurfer) ───
+    st.subheader("재생하면서 보기")
+    st.caption("파형 위에서 클릭하면 점프 · 섹션/구간을 클릭해도 점프 · 빨간선=구조, 파란선=분위기.")
     try:
-        fig = _plot_analysis(result)
-        st.pyplot(fig, clear_figure=True)
+        _wavesurfer_player(
+            audio_bytes=st.session_state["analysis_audio_bytes"],
+            audio_mime=st.session_state.get("analysis_audio_mime") or "audio/wav",
+            duration=float(result["duration_sec"]),
+            struct_bounds=result["segmentation"]["boundary_times"],
+            mood_bounds=result["mood"]["mood_boundaries"]["times"],
+            sections=result["mood"]["sections"],
+            show_struct=show_struct,
+            show_mood=show_mood,
+        )
     except Exception as e:
-        st.warning(f"플롯 생성 실패: {e}")
+        st.warning(f"플레이어 로드 실패: {e}")
+        st.audio(st.session_state["analysis_audio_bytes"])
+
+    # ─── Plotly 인터랙티브 차트 ───
+    st.subheader("상세 차트")
+    st.caption("줌·팬 가능 · 호버로 값 확인 (재생 동기화는 위쪽 플레이어에서).")
+    try:
+        fig = _plotly_analysis(result, show_struct=show_struct, show_mood=show_mood)
+        st.plotly_chart(fig, use_container_width=True, theme=None)
+    except Exception as e:
+        st.warning(f"차트 생성 실패: {e}")
+
+    # ─── matplotlib 백업 ───
+    with st.expander("정적 리포트 (matplotlib)", expanded=False):
+        try:
+            mpl_fig = _plot_analysis(result)
+            st.pyplot(mpl_fig, clear_figure=True)
+        except Exception as e:
+            st.warning(f"플롯 생성 실패: {e}")
 
     st.subheader("섹션별 분위기")
     sections = result["mood"]["sections"]
     if sections:
-        st.dataframe(
-            sections,
-            use_container_width=True,
-            hide_index=True,
-        )
+        st.dataframe(sections, use_container_width=True, hide_index=True)
     else:
         st.info("섹션이 감지되지 않았습니다.")
 
-    st.subheader("경계")
+    st.subheader("경계 (raw 시간)")
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**구조 경계 (초)**")
