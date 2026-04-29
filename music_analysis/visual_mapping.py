@@ -311,11 +311,18 @@ def gemini_classify_text(features: dict, narrative_text: str, title: str, artist
     return _parse_json_response(resp.text)
 
 
+def _audio_mime(p: Path) -> str:
+    return {
+        ".m4a": "audio/mp4", ".mp4": "audio/mp4", ".aac": "audio/aac",
+        ".wav": "audio/wav", ".flac": "audio/flac", ".ogg": "audio/ogg",
+    }.get(p.suffix.lower(), "audio/mpeg")
+
+
 def gemini_classify_audio(features: dict, audio_path: Path, title: str, artist: str) -> dict:
     from google.genai import types
     client = get_gemini_client()
     audio_bytes = audio_path.read_bytes()
-    mime = "audio/mp4" if audio_path.suffix.lower() in {".m4a", ".mp4"} else "audio/mpeg"
+    mime = _audio_mime(audio_path)
     user_text = (
         f"Song: {title} - {artist}\n"
         f"Librosa features: {json.dumps(features, ensure_ascii=False)}\n"
@@ -344,11 +351,14 @@ def process_kpop_visualization(
     title: str,
     artist: str,
     *,
+    audio_path: Optional[Path | str] = None,
     youtube_url: Optional[str] = None,
     force_refresh: bool = False,
     progress_cb=None,
 ) -> dict:
     """
+    audio_path가 주어지면 그 파일을 그대로 사용 (iTunes/YouTube 우회).
+    아니면 iTunes 미리듣기 → YouTube fallback 순으로 받아온다.
     progress_cb(pct, msg) optional. 단계별 진행도를 통보.
     """
     if not force_refresh:
@@ -363,9 +373,14 @@ def process_kpop_visualization(
     song = fetch_genius_song(title, artist)
     branch = "known" if song is not None else "new"
 
-    if progress_cb:
-        progress_cb(0.2, "음원 확보 (iTunes/YouTube)")
-    audio_path = acquire_audio(title, artist, youtube_url=youtube_url)
+    if audio_path is not None:
+        audio_path = Path(audio_path)
+        if progress_cb:
+            progress_cb(0.2, "업로드된 음원 사용")
+    else:
+        if progress_cb:
+            progress_cb(0.2, "음원 확보 (iTunes/YouTube)")
+        audio_path = acquire_audio(title, artist, youtube_url=youtube_url)
 
     if progress_cb:
         progress_cb(0.5, "Librosa feature 추출")
