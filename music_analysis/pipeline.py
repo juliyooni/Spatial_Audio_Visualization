@@ -338,6 +338,161 @@ def analyze_mood(y: np.ndarray, sr: int, boundary_times: List[float]) -> Dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# 4-b. 통합 섹셔닝 (실험)
+# ──────────────────────────────────────────────────────────────
+
+def merge_boundaries(
+    struct_bounds: List[float],
+    mood_bounds: List[float],
+    mood_frames: Dict,
+    duration: float,
+    *,
+    merge_tol_sec: float = 3.0,
+    min_segment_sec: float = 10.0,
+) -> Dict:
+    """구조 경계 + 분위기 경계를 통합해 하나의 섹셔닝으로 만든다.
+
+    1. 두 경계 리스트를 합쳐 시간순 정렬
+    2. 인접 경계 간격이 merge_tol_sec(=3.0) 이하면 하나로 묶고 **구조 경계 시간을 우선** 채택
+       (구조 경계가 비트에 정렬되어 있어 음악적으로 더 자연스러움). 묶음에 구조 경계가
+       없으면 분위기 경계 시간들의 평균.
+    3. 합친 경계로 섹션을 만든 뒤, min_segment_sec(=10.0) 미만 섹션은
+       **(valence, energy, tension) 평균이 더 비슷한 이웃에 흡수**한다.
+       유사도는 3차원 유클리드 거리. 한쪽 이웃이 없으면 있는 쪽으로.
+    """
+    # 1) 합치기 — 각 경계의 (시간, 출처) 태그도 같이 보관
+    tagged: list[tuple[float, set[str]]] = []
+    for t in struct_bounds:
+        tagged.append((float(t), {"struct"}))
+    for t in mood_bounds:
+        tagged.append((float(t), {"mood"}))
+    tagged.sort(key=lambda x: x[0])
+
+    # 2) 허용 오차 내 병합
+    merged: list[tuple[float, set[str]]] = []
+    cluster: list[tuple[float, set[str]]] = []
+
+    def _flush_cluster():
+        if not cluster:
+            return
+        # 묶음 안의 출처 합집합
+        sources: set[str] = set()
+        struct_times = []
+        mood_times = []
+        for t, src in cluster:
+            sources |= src
+            if "struct" in src:
+                struct_times.append(t)
+            if "mood" in src:
+                mood_times.append(t)
+        # 구조 우선 — 구조 경계가 묶음에 있으면 그 평균, 없으면 분위기 평균
+        ref_times = struct_times if struct_times else mood_times
+        merged_t = float(np.mean(ref_times))
+        merged.append((merged_t, sources))
+
+    for t, src in tagged:
+        if not cluster or t - cluster[-1][0] <= merge_tol_sec:
+            cluster.append((t, src))
+        else:
+            _flush_cluster()
+            cluster = [(t, src)]
+    _flush_cluster()
+
+    # 곡 시작/끝 강제 포함
+    times_only = [t for t, _ in merged]
+    if not times_only or times_only[0] > 0.0:
+        merged.insert(0, (0.0, {"start"}))
+    if not times_only or times_only[-1] < duration:
+        merged.append((float(duration), {"end"}))
+    merged.sort(key=lambda x: x[0])
+
+    # 3) 섹션화 + 짧은 섹션 흡수
+    def _section_vet(start: float, end: float) -> tuple[float, float, float]:
+        times = mood_frames["times"]
+        mask = (times >= start) & (times < end)
+        if not mask.any():
+            return (0.0, 0.0, 0.0)
+        return (
+            float(mood_frames["valence"][mask].mean()),
+            float(mood_frames["energy"][mask].mean()),
+            float(mood_frames["tension"][mask].mean()),
+        )
+
+    def _build_sections(boundary_list: list[tuple[float, set[str]]]) -> list[dict]:
+        sections = []
+        for i in range(len(boundary_list) - 1):
+            s_t, s_src = boundary_list[i]
+            e_t, _ = boundary_list[i + 1]
+            v, e, t = _section_vet(s_t, e_t)
+            sections.append({
+                "start": s_t,
+                "end": e_t,
+                "duration": e_t - s_t,
+                "valence": v, "energy": e, "tension": t,
+                "boundary_sources": sorted(s_src),  # 시작 경계의 출처
+                "mood_label": _label_mood(v, e, t),
+            })
+        return sections
+
+    bounds = list(merged)
+    while True:
+        sections = _build_sections(bounds)
+        # 가장 짧은 섹션을 찾아 임계 미만이면 흡수, 아니면 종료
+        short_idx = -1
+        short_dur = float("inf")
+        for i, s in enumerate(sections):
+            if s["duration"] < min_segment_sec and s["duration"] < short_dur:
+                short_dur = s["duration"]
+                short_idx = i
+        if short_idx < 0 or len(sections) <= 1:
+            break
+
+        cur = sections[short_idx]
+        prev = sections[short_idx - 1] if short_idx > 0 else None
+        nxt = sections[short_idx + 1] if short_idx < len(sections) - 1 else None
+
+        cur_vet = np.array([cur["valence"], cur["energy"], cur["tension"]])
+
+        def _dist(other):
+            if other is None:
+                return float("inf")
+            return float(np.linalg.norm(cur_vet - np.array([other["valence"], other["energy"], other["tension"]])))
+
+        d_prev = _dist(prev)
+        d_next = _dist(nxt)
+        # 더 비슷한 쪽(거리 작은 쪽)으로 흡수
+        # 동률이면 더 긴 이웃 쪽 (큰 덩어리에 swallow — §3.2 폴백 룰과 동일)
+        if d_prev < d_next or (d_prev == d_next and (prev and nxt and prev["duration"] >= nxt["duration"])):
+            # prev 쪽으로 흡수: 현재 시작 경계 제거
+            del bounds[short_idx]  # bounds[short_idx]가 cur의 시작
+        else:
+            # next 쪽으로 흡수: 다음 경계 제거
+            del bounds[short_idx + 1]
+
+    # 최종 결과
+    final_sections = _build_sections(bounds)
+    boundary_times = [t for t, _ in bounds]
+    boundary_sources = [sorted(src) for _, src in bounds]
+    return {
+        "boundary_times": boundary_times,
+        "boundary_sources": boundary_sources,  # 각 경계가 "struct"/"mood" 어디서 왔는지
+        "sections": [
+            {**s,
+             "section_idx": i,
+             "duration": round(s["duration"], 2),
+             "valence": round(s["valence"], 3),
+             "energy": round(s["energy"], 3),
+             "tension": round(s["tension"], 3)}
+            for i, s in enumerate(final_sections)
+        ],
+        "params": {
+            "merge_tol_sec": merge_tol_sec,
+            "min_segment_sec": min_segment_sec,
+        },
+    }
+
+
+# ──────────────────────────────────────────────────────────────
 # 5. 파이프라인
 # ──────────────────────────────────────────────────────────────
 
@@ -363,6 +518,15 @@ def analyze_track(path: str, progress_cb=None) -> Dict:
     mood = analyze_mood(y_mono, sr, seg["boundary_times"])
 
     if progress_cb:
+        progress_cb(0.95, "통합 섹셔닝")
+    unified = merge_boundaries(
+        seg["boundary_times"],
+        mood["mood_boundaries"]["times"],
+        mood["frames"],
+        duration=float(duration),
+    )
+
+    if progress_cb:
         progress_cb(1.0, "완료")
 
     return {
@@ -372,6 +536,7 @@ def analyze_track(path: str, progress_cb=None) -> Dict:
         "tempo_bpm": round(seg["tempo"], 2),
         "pitch": pitch,
         "segmentation": seg,
+        "unified": unified,
         "mood": mood,
         "_audio": {
             "left": audio["left"],

@@ -382,7 +382,7 @@ def _plot_analysis(result: dict):
     return fig
 
 
-def _plotly_analysis(result: dict, show_struct: bool, show_mood: bool):
+def _plotly_analysis(result: dict, show_struct: bool, show_mood: bool, show_unified: bool = False):
     """Plotly 3행 인터랙티브 차트 — 파형(다운샘플) / 피치 / novelty.
 
     matplotlib 백업 플롯과 같은 정보를 보여주되 줌·팬·호버가 가능하도록.
@@ -394,12 +394,19 @@ def _plotly_analysis(result: dict, show_struct: bool, show_mood: bool):
     y = result["_audio"]["mono"]
     sr = result["_audio"]["sr"]
     pitch = result["pitch"]
-    sections = result["mood"]["sections"]
     struct_bounds = result["segmentation"]["boundary_times"]
     mood_bounds = result["mood"]["mood_boundaries"]["times"]
     novelty = result["mood"]["mood_boundaries"]["novelty"]
     nov_times = result["mood"]["mood_boundaries"]["frame_times"]
     duration = result["duration_sec"]
+
+    # 통합 모드면 통합 섹션과 경계를 사용
+    unified = result.get("unified", {})
+    unified_bounds = unified.get("boundary_times", []) if show_unified else []
+    if show_unified and unified.get("sections"):
+        sections = unified["sections"]
+    else:
+        sections = result["mood"]["sections"]
 
     # 파형은 픽셀 수 정도로 다운샘플 — 5분 곡도 가볍게 그릴 수 있게
     target_pts = 4000
@@ -488,6 +495,26 @@ def _plotly_analysis(result: dict, show_struct: bool, show_mood: bool):
     if show_mood:
         for b in mood_bounds:
             fig.add_vline(x=b, line=dict(color="royalblue", width=1.2, dash="dot"), opacity=0.8)
+    if show_unified:
+        unified_sources = unified.get("boundary_sources", [])
+        for i, b in enumerate(unified_bounds):
+            fig.add_vline(x=b, line=dict(color="seagreen", width=1.5), opacity=0.85)
+            srcs = unified_sources[i] if i < len(unified_sources) else []
+            if "struct" in srcs and "mood" in srcs:
+                tag = "S+M"
+            elif "struct" in srcs:
+                tag = "S"
+            elif "mood" in srcs:
+                tag = "M"
+            else:
+                continue  # start/end는 라벨 안 붙임
+            # 첫 번째 row 상단에 작은 라벨
+            fig.add_annotation(
+                x=b, y=1.02, yref="y domain", xref="x",
+                text=tag, showarrow=False,
+                font=dict(size=9, color="seagreen", family="monospace"),
+                row=1, col=1,
+            )
 
     fig.update_layout(
         height=620, margin=dict(l=50, r=20, t=40, b=40),
@@ -512,6 +539,9 @@ def _wavesurfer_player(
     sections: list[dict],
     show_struct: bool,
     show_mood: bool,
+    unified_bounds: list[float] | None = None,
+    unified_sources: list[list[str]] | None = None,
+    show_unified: bool = False,
     height: int = 220,
 ):
     """WaveSurfer.js로 파형 + 재생 커서 + 경계 region을 그린다.
@@ -522,12 +552,31 @@ def _wavesurfer_player(
     b64 = base64.b64encode(audio_bytes).decode("ascii")
     data_url = f"data:{audio_mime};base64,{b64}"
 
+    # 통합 마커에 표시할 소스 라벨 — "S"=구조, "M"=분위기, "S+M"=합쳐진 것
+    def _src_label(srcs: list[str]) -> str:
+        has_s = "struct" in srcs
+        has_m = "mood" in srcs
+        if has_s and has_m:
+            return "S+M"
+        if has_s:
+            return "S"
+        if has_m:
+            return "M"
+        return ""  # start/end는 라벨 없음
+
+    unified_payload = []
+    if show_unified and unified_bounds:
+        srcs = unified_sources or [[] for _ in unified_bounds]
+        for t, src in zip(unified_bounds, srcs):
+            unified_payload.append({"t": float(t), "label": _src_label(src)})
+
     # JS에 넘길 데이터
     payload = {
         "audio": data_url,
         "duration": duration,
         "struct": [float(b) for b in struct_bounds] if show_struct else [],
         "mood": [float(b) for b in mood_bounds] if show_mood else [],
+        "unified": unified_payload,
         "sections": [
             {
                 "start": float(s["start"]),
@@ -583,6 +632,8 @@ def _wavesurfer_player(
     <span class="sw" style="background:crimson"></span>구조 경계
     &nbsp;&nbsp;
     <span class="sw" style="background:royalblue"></span>분위기 경계
+    &nbsp;&nbsp;
+    <span class="sw" style="background:seagreen"></span>통합 (S=구조 / M=분위기 / S+M=합쳐진 것)
     &nbsp;&nbsp;섹션을 클릭하면 해당 시점으로 점프
   </div>
 </div>
@@ -650,6 +701,15 @@ def _wavesurfer_player(
         start: t, end: t,
         color: 'rgba(65,105,225,0.9)',
         drag: false, resize: false,
+      }});
+    }});
+    // 통합 경계 — 녹색 마커 + 소스 라벨(S/M/S+M)
+    DATA.unified.forEach(o => {{
+      regions.addRegion({{
+        start: o.t, end: o.t,
+        color: 'rgba(46,139,87,0.95)',
+        drag: false, resize: false,
+        content: o.label || '',
       }});
     }});
 
@@ -737,17 +797,29 @@ def tab_music_analysis():
     st.subheader("표시할 경계")
     boundary_choice = st.radio(
         "어떤 경계를 표시할까요?",
-        ["둘 다", "구조 경계만", "분위기 경계만"],
+        ["둘 다", "구조 경계만", "분위기 경계만", "통합 분석"],
         horizontal=True,
         key="analysis_boundary_choice",
         label_visibility="collapsed",
+        help="통합 분석: 두 검출을 ±3초 내에서 병합하고 10초 미만 섹션을 더 비슷한 이웃에 흡수.",
     )
-    show_struct = boundary_choice in ("둘 다", "구조 경계만")
-    show_mood = boundary_choice in ("둘 다", "분위기 경계만")
+    show_unified = boundary_choice == "통합 분석"
+    show_struct = (not show_unified) and boundary_choice in ("둘 다", "구조 경계만")
+    show_mood = (not show_unified) and boundary_choice in ("둘 다", "분위기 경계만")
+
+    # 통합 모드면 섹션 음영도 통합 섹션을 사용
+    unified = result.get("unified", {})
+    if show_unified and unified.get("sections"):
+        ws_sections = unified["sections"]
+    else:
+        ws_sections = result["mood"]["sections"]
 
     # ─── 인터랙티브 플레이어 (WaveSurfer) ───
     st.subheader("재생하면서 보기")
-    st.caption("파형 위에서 클릭하면 점프 · 섹션/구간을 클릭해도 점프 · 빨간선=구조, 파란선=분위기.")
+    if show_unified:
+        st.caption("녹색=통합 경계 · S=구조 출처, M=분위기 출처, S+M=둘 다에서 잡힌 합쳐진 경계.")
+    else:
+        st.caption("파형 위에서 클릭하면 점프 · 섹션/구간을 클릭해도 점프 · 빨간선=구조, 파란선=분위기.")
     try:
         _wavesurfer_player(
             audio_bytes=audio_bytes,
@@ -755,9 +827,12 @@ def tab_music_analysis():
             duration=float(result["duration_sec"]),
             struct_bounds=result["segmentation"]["boundary_times"],
             mood_bounds=result["mood"]["mood_boundaries"]["times"],
-            sections=result["mood"]["sections"],
+            sections=ws_sections,
             show_struct=show_struct,
             show_mood=show_mood,
+            unified_bounds=unified.get("boundary_times"),
+            unified_sources=unified.get("boundary_sources"),
+            show_unified=show_unified,
         )
     except Exception as e:
         st.warning(f"플레이어 로드 실패: {e}")
@@ -768,7 +843,7 @@ def tab_music_analysis():
     st.subheader("상세 차트")
     st.caption("줌·팬 가능 · 호버로 값 확인 (재생 동기화는 위쪽 플레이어에서).")
     try:
-        fig = _plotly_analysis(result, show_struct=show_struct, show_mood=show_mood)
+        fig = _plotly_analysis(result, show_struct=show_struct, show_mood=show_mood, show_unified=show_unified)
         st.plotly_chart(fig, use_container_width=True, theme=None)
     except Exception as e:
         st.warning(f"차트 생성 실패: {e}")
@@ -782,20 +857,33 @@ def tab_music_analysis():
             st.warning(f"플롯 생성 실패: {e}")
 
     st.subheader("섹션별 분위기")
-    sections = result["mood"]["sections"]
-    if sections:
-        st.dataframe(sections, use_container_width=True, hide_index=True)
+    if show_unified and unified.get("sections"):
+        st.caption("통합 섹션 — boundary_sources에 S/M 표기.")
+        st.dataframe(unified["sections"], use_container_width=True, hide_index=True)
     else:
-        st.info("섹션이 감지되지 않았습니다.")
+        sections = result["mood"]["sections"]
+        if sections:
+            st.dataframe(sections, use_container_width=True, hide_index=True)
+        else:
+            st.info("섹션이 감지되지 않았습니다.")
 
     st.subheader("경계 (raw 시간)")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**구조 경계 (초)**")
-        st.write([round(b, 2) for b in result["segmentation"]["boundary_times"]])
-    with c2:
-        st.markdown("**분위기 전환부 (초)**")
-        st.write([round(b, 2) for b in result["mood"]["mood_boundaries"]["times"]])
+    if show_unified:
+        st.markdown("**통합 경계 (초)**")
+        ub = unified.get("boundary_times", [])
+        us = unified.get("boundary_sources", [])
+        st.write([
+            {"t": round(t, 2), "src": "+".join(s) if s else "-"}
+            for t, s in zip(ub, us)
+        ])
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**구조 경계 (초)**")
+            st.write([round(b, 2) for b in result["segmentation"]["boundary_times"]])
+        with c2:
+            st.markdown("**분위기 전환부 (초)**")
+            st.write([round(b, 2) for b in result["mood"]["mood_boundaries"]["times"]])
 
     st.divider()
     st.subheader("내보내기")
