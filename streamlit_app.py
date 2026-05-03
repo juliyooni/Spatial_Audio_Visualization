@@ -83,13 +83,21 @@ def save_uploaded(uploaded) -> str:
 # ══════════════════════════════════════════════════════════════
 
 def split_channels(data: np.ndarray) -> dict[str, np.ndarray]:
+    """L/R은 실제 출력 채널에만 보내고, Mid/Side는 듀얼 모노로 양쪽에 보낸다.
+
+    - left  → [L, 0]  : 왼쪽 스피커에서만
+    - right → [0, R]  : 오른쪽 스피커에서만
+    - mid   → [M, M]  : (L+R)/2를 양쪽 모두 (가운데 정위)
+    - side  → [S, S]  : (L-R)/2를 양쪽 모두 (Mid/Side는 좌우 개념이 없음)
+    """
     left = data[0:1]
     right = data[1:2] if data.shape[0] > 1 else data[0:1]
     mid = (left + right) / 2.0
     side = (left - right) / 2.0
+    silence = np.zeros_like(left)
     return {
-        "left": np.concatenate([left, left], axis=0),
-        "right": np.concatenate([right, right], axis=0),
+        "left": np.concatenate([left, silence], axis=0),
+        "right": np.concatenate([silence, right], axis=0),
         "mid": np.concatenate([mid, mid], axis=0),
         "side": np.concatenate([side, side], axis=0),
     }
