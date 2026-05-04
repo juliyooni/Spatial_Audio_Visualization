@@ -72,5 +72,42 @@
       },
       "reasoning_brief": "제목과 가사에서 드러나는 풋풋하고 진심 어린 고백, 미래에 대한 희망이 'High-teen' 내러티브와 잘 맞습니다. 높은 에너지와 하늘, 바람 등의 시각적 요소는 밝고 경쾌한 'Synth-pop' 질감과 연결됩니다. 쪽지, 하늘, 펜은 가사의 핵심적인 시각적 상징이며, 색상은 높은 에너지와 희망적인 분위기를 반영하되, 약간의 서툰 감성을 담아 밝고 부드러운 톤으로 구성했습니다."
     }
+  },
+  "asap__newjeans": {
+    "metadata": {
+      "title": "asap",
+      "artist": "newjeans",
+      "branch": "known",
+      "genius_url": "https://genius.com/Newjeans-asap-lyrics",
+      "audio_source": "tmpkgx0wok8.mp3"
+    },
+    "live_features": {
+      "duration": 140.6897052154195,
+      "tempo": 129.19921875,
+      "energy": 1.0,
+      "valence": 0.34760776371919233,
+      "danceability": 0.6979511525371287,
+      "key": 2,
+      "harmonic_ratio": 0.7190844843733672,
+      "dynamics_range": 7.036886692047119,
+      "_source": "librosa"
+    },
+    "concept_features": {
+      "sonic_texture": "Synth-pop",
+      "narrative_archetype": "High-teen",
+      "visual_symbols": [
+        "Clock",
+        "Phone",
+        "Red Button"
+      ],
+      "color_palette": {
+        "main": "#6495ED",
+        "sub": [
+          "#B0E0E6",
+          "#FFC0CB"
+        ]
+      },
+      "reasoning_brief": "미니멀한 신스 사운드와 'Tik, tok' 가사에서 드러나는 시간적 압박감이 신스팝의 특징을 나타냅니다. 'ASAP', 'Hurry up' 등의 가사와 끊임없이 소통하려는 내용은 하이틴의 즉각적인 감성과 연결됩니다. 높은 에너지와 낮은 Valence는 밝고 채도 높은 차가운 색상으로 표현했습니다."
+    }
   }
 }
