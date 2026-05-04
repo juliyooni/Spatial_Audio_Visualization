@@ -793,97 +793,121 @@ def tab_music_analysis():
         c3.metric("피치 중앙값", f"{ps['f0_median_hz']:.0f} Hz")
         c4.metric("Voiced 비율", f"{ps['voiced_ratio']*100:.0f} %")
 
-    # ─── 경계 토글 ───
-    st.subheader("표시할 경계")
-    boundary_choice = st.radio(
-        "어떤 경계를 표시할까요?",
-        ["둘 다", "구조 경계만", "분위기 경계만", "통합 분석"],
-        horizontal=True,
-        key="analysis_boundary_choice",
+    # ─── 경계 토글 (다중 선택) ───
+    st.subheader("비교할 뷰 선택")
+    VIEW_OPTIONS = ["구조 경계", "분위기 경계", "통합 분석"]
+    selected_views = st.multiselect(
+        "어떤 뷰를 비교하시겠어요?",
+        VIEW_OPTIONS,
+        default=VIEW_OPTIONS,
+        key="analysis_view_selection",
         label_visibility="collapsed",
-        help="통합 분석: 두 검출을 ±3초 내에서 병합하고 10초 미만 섹션을 더 비슷한 이웃에 흡수.",
+        help="여러 개 선택하면 선택된 뷰가 세로로 차례로 표시되어 같은 곡을 다른 기준으로 동시에 비교할 수 있어요.",
     )
-    show_unified = boundary_choice == "통합 분석"
-    show_struct = (not show_unified) and boundary_choice in ("둘 다", "구조 경계만")
-    show_mood = (not show_unified) and boundary_choice in ("둘 다", "분위기 경계만")
 
-    # 통합 모드면 섹션 음영도 통합 섹션을 사용
+    if not selected_views:
+        st.info("최소 한 개의 뷰를 선택하세요.")
+        return
+
     unified = result.get("unified", {})
-    if show_unified and unified.get("sections"):
-        ws_sections = unified["sections"]
-    else:
-        ws_sections = result["mood"]["sections"]
-
-    # ─── 인터랙티브 플레이어 (WaveSurfer) ───
-    st.subheader("재생하면서 보기")
-    if show_unified:
-        st.caption("녹색=통합 경계 · S=구조 출처, M=분위기 출처, S+M=둘 다에서 잡힌 합쳐진 경계.")
-    else:
-        st.caption("파형 위에서 클릭하면 점프 · 섹션/구간을 클릭해도 점프 · 빨간선=구조, 파란선=분위기.")
-    try:
-        _wavesurfer_player(
-            audio_bytes=audio_bytes,
-            audio_mime=audio_mime,
-            duration=float(result["duration_sec"]),
-            struct_bounds=result["segmentation"]["boundary_times"],
-            mood_bounds=result["mood"]["mood_boundaries"]["times"],
-            sections=ws_sections,
-            show_struct=show_struct,
-            show_mood=show_mood,
-            unified_bounds=unified.get("boundary_times"),
-            unified_sources=unified.get("boundary_sources"),
-            show_unified=show_unified,
+    if "통합 분석" in selected_views and not unified.get("boundary_times"):
+        st.warning(
+            "통합 경계가 비어 있습니다. 분석 결과에 `unified` 키가 없거나 비었어요 — "
+            "분석 버튼을 다시 눌러 재실행하면 채워집니다."
         )
-    except Exception as e:
-        st.warning(f"플레이어 로드 실패: {e}")
-        if audio_bytes:
-            st.audio(audio_bytes)
 
-    # ─── Plotly 인터랙티브 차트 ───
-    st.subheader("상세 차트")
-    st.caption("줌·팬 가능 · 호버로 값 확인 (재생 동기화는 위쪽 플레이어에서).")
-    try:
-        fig = _plotly_analysis(result, show_struct=show_struct, show_mood=show_mood, show_unified=show_unified)
-        st.plotly_chart(fig, use_container_width=True, theme=None)
-    except Exception as e:
-        st.warning(f"차트 생성 실패: {e}")
+    # ─── 뷰별로 차례 렌더링 ───
+    for idx, view in enumerate(selected_views):
+        if idx > 0:
+            st.divider()
 
-    # ─── matplotlib 백업 ───
+        show_struct = view == "구조 경계"
+        show_mood = view == "분위기 경계"
+        show_unified = view == "통합 분석"
+
+        if show_unified and unified.get("sections"):
+            ws_sections = unified["sections"]
+            section_caption = "통합 섹션 — boundary_sources에 S/M 표기."
+        else:
+            ws_sections = result["mood"]["sections"]
+            section_caption = "분위기 기반 섹션 (mood novelty 경계로 분할)."
+
+        legend = {
+            "구조 경계": "빨간선=구조 (chroma+MFCC 라플라시안 클러스터링)",
+            "분위기 경계": "파란선=분위기 (valence/energy/tension novelty)",
+            "통합 분석": "녹색=통합 (S=구조 출처 · M=분위기 출처 · S+M=둘 다)",
+        }[view]
+
+        st.markdown(f"### 🔍 {view}")
+        st.caption(legend)
+
+        # 인터랙티브 플레이어
+        try:
+            _wavesurfer_player(
+                audio_bytes=audio_bytes,
+                audio_mime=audio_mime,
+                duration=float(result["duration_sec"]),
+                struct_bounds=result["segmentation"]["boundary_times"],
+                mood_bounds=result["mood"]["mood_boundaries"]["times"],
+                sections=ws_sections,
+                show_struct=show_struct,
+                show_mood=show_mood,
+                unified_bounds=unified.get("boundary_times"),
+                unified_sources=unified.get("boundary_sources"),
+                show_unified=show_unified,
+            )
+        except Exception as e:
+            st.warning(f"플레이어 로드 실패: {e}")
+            if audio_bytes:
+                st.audio(audio_bytes)
+
+        # Plotly 차트
+        try:
+            fig = _plotly_analysis(
+                result,
+                show_struct=show_struct,
+                show_mood=show_mood,
+                show_unified=show_unified,
+            )
+            st.plotly_chart(
+                fig,
+                use_container_width=True,
+                theme=None,
+                key=f"plotly-{idx}",
+            )
+        except Exception as e:
+            st.warning(f"차트 생성 실패: {e}")
+
+        # 섹션 표
+        st.markdown("**섹션별 분위기**")
+        st.caption(section_caption)
+        if ws_sections:
+            st.dataframe(ws_sections, use_container_width=True, hide_index=True)
+        else:
+            st.info("섹션이 감지되지 않았습니다.")
+
+        # 경계 raw
+        st.markdown("**경계 (raw 시간)**")
+        if show_unified:
+            ub = unified.get("boundary_times", [])
+            us = unified.get("boundary_sources", [])
+            st.write([
+                {"t": round(t, 2), "src": "+".join(s) if s else "-"}
+                for t, s in zip(ub, us)
+            ])
+        elif show_struct:
+            st.write([round(b, 2) for b in result["segmentation"]["boundary_times"]])
+        else:
+            st.write([round(b, 2) for b in result["mood"]["mood_boundaries"]["times"]])
+
+    # ─── 공통: matplotlib 백업 ───
+    st.divider()
     with st.expander("정적 리포트 (matplotlib)", expanded=False):
         try:
             mpl_fig = _plot_analysis(result)
             st.pyplot(mpl_fig, clear_figure=True)
         except Exception as e:
             st.warning(f"플롯 생성 실패: {e}")
-
-    st.subheader("섹션별 분위기")
-    if show_unified and unified.get("sections"):
-        st.caption("통합 섹션 — boundary_sources에 S/M 표기.")
-        st.dataframe(unified["sections"], use_container_width=True, hide_index=True)
-    else:
-        sections = result["mood"]["sections"]
-        if sections:
-            st.dataframe(sections, use_container_width=True, hide_index=True)
-        else:
-            st.info("섹션이 감지되지 않았습니다.")
-
-    st.subheader("경계 (raw 시간)")
-    if show_unified:
-        st.markdown("**통합 경계 (초)**")
-        ub = unified.get("boundary_times", [])
-        us = unified.get("boundary_sources", [])
-        st.write([
-            {"t": round(t, 2), "src": "+".join(s) if s else "-"}
-            for t, s in zip(ub, us)
-        ])
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**구조 경계 (초)**")
-            st.write([round(b, 2) for b in result["segmentation"]["boundary_times"]])
-        with c2:
-            st.markdown("**분위기 전환부 (초)**")
-            st.write([round(b, 2) for b in result["mood"]["mood_boundaries"]["times"]])
 
     st.divider()
     st.subheader("내보내기")
