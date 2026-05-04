@@ -818,19 +818,14 @@ def tab_music_analysis():
 
     # ─── 뷰별로 차례 렌더링 ───
     for idx, view in enumerate(selected_views):
-        if idx > 0:
-            st.divider()
-
         show_struct = view == "구조 경계"
         show_mood = view == "분위기 경계"
         show_unified = view == "통합 분석"
 
         if show_unified and unified.get("sections"):
             ws_sections = unified["sections"]
-            section_caption = "통합 섹션 — boundary_sources에 S/M 표기."
         else:
             ws_sections = result["mood"]["sections"]
-            section_caption = "분위기 기반 섹션 (mood novelty 경계로 분할)."
 
         legend = {
             "구조 경계": "빨간선=구조 (chroma+MFCC 라플라시안 클러스터링)",
@@ -841,7 +836,6 @@ def tab_music_analysis():
         st.markdown(f"### 🔍 {view}")
         st.caption(legend)
 
-        # 인터랙티브 플레이어
         try:
             _wavesurfer_player(
                 audio_bytes=audio_bytes,
@@ -860,45 +854,6 @@ def tab_music_analysis():
             st.warning(f"플레이어 로드 실패: {e}")
             if audio_bytes:
                 st.audio(audio_bytes)
-
-        # Plotly 차트
-        try:
-            fig = _plotly_analysis(
-                result,
-                show_struct=show_struct,
-                show_mood=show_mood,
-                show_unified=show_unified,
-            )
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-                theme=None,
-                key=f"plotly-{idx}",
-            )
-        except Exception as e:
-            st.warning(f"차트 생성 실패: {e}")
-
-        # 섹션 표
-        st.markdown("**섹션별 분위기**")
-        st.caption(section_caption)
-        if ws_sections:
-            st.dataframe(ws_sections, use_container_width=True, hide_index=True)
-        else:
-            st.info("섹션이 감지되지 않았습니다.")
-
-        # 경계 raw
-        st.markdown("**경계 (raw 시간)**")
-        if show_unified:
-            ub = unified.get("boundary_times", [])
-            us = unified.get("boundary_sources", [])
-            st.write([
-                {"t": round(t, 2), "src": "+".join(s) if s else "-"}
-                for t, s in zip(ub, us)
-            ])
-        elif show_struct:
-            st.write([round(b, 2) for b in result["segmentation"]["boundary_times"]])
-        else:
-            st.write([round(b, 2) for b in result["mood"]["mood_boundaries"]["times"]])
 
     # ─── 공통: matplotlib 백업 ───
     st.divider()
