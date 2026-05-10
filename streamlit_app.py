@@ -542,6 +542,7 @@ def _wavesurfer_player(
     unified_bounds: list[float] | None = None,
     unified_sources: list[list[str]] | None = None,
     show_unified: bool = False,
+    view_title: str | None = None,
     height: int = 220,
 ):
     """WaveSurfer.js로 파형 + 재생 커서 + 경계 region을 그린다.
@@ -586,6 +587,10 @@ def _wavesurfer_player(
             }
             for s in sections
         ],
+        "view_title": view_title or "",
+        "show_struct": bool(show_struct),
+        "show_mood": bool(show_mood),
+        "show_unified": bool(show_unified),
     }
 
     html = f"""
@@ -595,18 +600,19 @@ def _wavesurfer_player(
 <meta charset="utf-8">
 <style>
   body {{ margin: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #222; }}
-  #wrap {{ padding: 8px 4px; }}
+  #wrap {{ padding: 2px 4px; }}
+  .view-title {{ font-size: 14px; font-weight: 600; margin: 0 0 4px 0; color: #222; }}
   #waveform {{ background: #f7f7f7; border-radius: 6px; }}
-  .controls {{ display: flex; gap: 8px; align-items: center; margin-top: 8px; }}
+  .controls {{ display: flex; gap: 8px; align-items: center; margin-top: 6px; }}
   .controls button {{
     background: #1f77b4; color: white; border: none; border-radius: 4px;
-    padding: 6px 14px; cursor: pointer; font-size: 13px;
+    padding: 4px 12px; cursor: pointer; font-size: 12px;
   }}
   .controls button:hover {{ background: #145a8a; }}
   .controls button.secondary {{ background: #888; }}
   .controls button.secondary:hover {{ background: #555; }}
-  #time {{ font-variant-numeric: tabular-nums; font-size: 13px; color: #444; margin-left: auto; }}
-  .legend {{ font-size: 11px; color: #666; margin-top: 6px; }}
+  #time {{ font-variant-numeric: tabular-nums; font-size: 12px; color: #444; margin-left: auto; }}
+  .legend {{ font-size: 11px; color: #666; margin-top: 4px; }}
   .legend .sw {{ display: inline-block; width: 10px; height: 10px; vertical-align: middle; margin-right: 3px; border-radius: 2px; }}
   #section-bar {{
     margin-top: 6px; display: flex; gap: 2px;
@@ -621,6 +627,7 @@ def _wavesurfer_player(
 </head>
 <body>
 <div id="wrap">
+  <div id="view-title" class="view-title"></div>
   <div id="waveform"></div>
   <div id="section-bar"></div>
   <div class="controls">
@@ -628,14 +635,7 @@ def _wavesurfer_player(
     <button id="restart" class="secondary">⏮ 처음으로</button>
     <span id="time">0:00 / 0:00</span>
   </div>
-  <div class="legend">
-    <span class="sw" style="background:crimson"></span>구조 경계
-    &nbsp;&nbsp;
-    <span class="sw" style="background:royalblue"></span>분위기 경계
-    &nbsp;&nbsp;
-    <span class="sw" style="background:seagreen"></span>통합 (S=구조 / M=분위기 / S+M=합쳐진 것)
-    &nbsp;&nbsp;섹션을 클릭하면 해당 시점으로 점프
-  </div>
+  <div id="legend" class="legend"></div>
 </div>
 
 <script src="https://unpkg.com/wavesurfer.js@7.8.6/dist/wavesurfer.min.js"></script>
@@ -713,13 +713,19 @@ def _wavesurfer_player(
       }});
     }});
 
-    // 영역 클릭하면 해당 시점으로 점프
+    // 영역 클릭 — 클릭한 정확한 픽셀 위치를 시간으로 환산해서 점프
     regions.on('region-clicked', (region, e) => {{
       e.stopPropagation();
-      ws.setTime(region.start);
+      const wf = document.getElementById('waveform');
+      const rect = wf.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const ratio = Math.max(0, Math.min(1, x / rect.width));
+      ws.setTime(ratio * DATA.duration);
     }});
 
     renderSectionBar();
+    renderLegend();
+    renderTitle();
   }});
 
   function fmt(s) {{
@@ -748,7 +754,7 @@ def _wavesurfer_player(
     if (!ws.isPlaying()) ws.play();
   }};
 
-  // 섹션 바 — 클릭하면 해당 섹션 시작점으로 점프
+  // 섹션 바 — 클릭한 정확한 위치(섹션 내 비율)로 점프
   function renderSectionBar() {{
     const bar = document.getElementById('section-bar');
     bar.innerHTML = '';
@@ -759,15 +765,45 @@ def _wavesurfer_player(
       seg.style.flex = (s.end - s.start);
       seg.title = '#' + s.idx + ' · ' + s.label + ' (' + s.start.toFixed(1) + '–' + s.end.toFixed(1) + 's)';
       seg.textContent = '#' + s.idx + ' ' + s.label;
-      seg.onclick = () => ws.setTime(s.start);
+      seg.onclick = (e) => {{
+        const rect = seg.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+        ws.setTime(s.start + ratio * (s.end - s.start));
+      }};
       bar.appendChild(seg);
     }});
+  }}
+
+  function renderTitle() {{
+    const el = document.getElementById('view-title');
+    if (DATA.view_title) {{
+      el.textContent = '🔍 ' + DATA.view_title;
+    }} else {{
+      el.style.display = 'none';
+    }}
+  }}
+
+  function renderLegend() {{
+    const el = document.getElementById('legend');
+    const parts = [];
+    if (DATA.show_struct) {{
+      parts.push('<span class="sw" style="background:crimson"></span>구조 경계');
+    }}
+    if (DATA.show_mood) {{
+      parts.push('<span class="sw" style="background:royalblue"></span>분위기 경계');
+    }}
+    if (DATA.show_unified) {{
+      parts.push('<span class="sw" style="background:seagreen"></span>통합 (S=구조 / M=분위기 / S+M=합쳐진 것)');
+    }}
+    parts.push('파형/섹션을 클릭하면 그 지점으로 점프');
+    el.innerHTML = parts.join(' &nbsp;·&nbsp; ');
   }}
 </script>
 </body>
 </html>
 """
-    components.html(html, height=height + 100, scrolling=False)
+    # waveform(100) + section-bar(~22) + controls(~28) + legend(~18) + title(~22) + padding/margin
+    components.html(html, height=height, scrolling=False)
 
 
 def tab_music_analysis():
@@ -816,25 +852,29 @@ def tab_music_analysis():
             "분석 버튼을 다시 눌러 재실행하면 채워집니다."
         )
 
-    # ─── 뷰별로 차례 렌더링 ───
-    for idx, view in enumerate(selected_views):
-        show_struct = view == "구조 경계"
-        show_mood = view == "분위기 경계"
-        show_unified = view == "통합 분석"
+    # ─── 뷰별로 차례 렌더링 (사이 공백 최소화) ───
+    # components iframe들 사이의 vertical 간격을 강제로 조여 세 개가 딱 붙어 보이게.
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stVerticalBlock"] > div:has(> iframe) { margin-bottom: -8px !important; }
+        iframe { display: block; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        if show_unified and unified.get("sections"):
+    for idx, view in enumerate(selected_views):
+        # "구조 경계" → 빨강만, "분위기 경계" → 파랑만, "통합 분석" → 셋 다 표시
+        is_unified_view = view == "통합 분석"
+        show_struct = view == "구조 경계" or is_unified_view
+        show_mood = view == "분위기 경계" or is_unified_view
+        show_unified = is_unified_view
+
+        if is_unified_view and unified.get("sections"):
             ws_sections = unified["sections"]
         else:
             ws_sections = result["mood"]["sections"]
-
-        legend = {
-            "구조 경계": "빨간선=구조 (chroma+MFCC 라플라시안 클러스터링)",
-            "분위기 경계": "파란선=분위기 (valence/energy/tension novelty)",
-            "통합 분석": "녹색=통합 (S=구조 출처 · M=분위기 출처 · S+M=둘 다)",
-        }[view]
-
-        st.markdown(f"### 🔍 {view}")
-        st.caption(legend)
 
         try:
             _wavesurfer_player(
@@ -849,6 +889,7 @@ def tab_music_analysis():
                 unified_bounds=unified.get("boundary_times"),
                 unified_sources=unified.get("boundary_sources"),
                 show_unified=show_unified,
+                view_title=view,
             )
         except Exception as e:
             st.warning(f"플레이어 로드 실패: {e}")
@@ -1030,15 +1071,15 @@ def _run_pipelines(
     # 1) 음악 분석
     if do_analysis:
         from music_analysis.pipeline import analyze_track
-        with st.status("🎼 음악 분석 중...", expanded=True) as s:
+        with st.status("음악 분석 중...", expanded=True) as s:
             inner = st.progress(0.0, text="시작")
             result = analyze_track(input_path, progress_cb=lambda p, m: inner.progress(p, text=m))
             bundle["analysis"] = result
-            s.update(label="🎼 음악 분석 완료", state="complete")
+            s.update(label="음악 분석 완료", state="complete")
 
     # 2) 음원 분리
     if do_split:
-        with st.status("🎧 음원 분리 (채널 + Demucs 4-stem)...", expanded=True) as s:
+        with st.status("음원 분리 (채널 + Demucs 4-stem)...", expanded=True) as s:
             inner = st.progress(0.0, text="오디오 로딩")
             audio, sr = load_audio_stereo(input_path)
             inner.progress(0.1, text="채널 분리는 즉시 가능 / Demucs 분리 시작")
@@ -1056,12 +1097,12 @@ def _run_pipelines(
                 "demucs_stems": stems,
                 "demucs_sr": demucs_sr,
             }
-            s.update(label="🎧 음원 분리 완료", state="complete")
+            s.update(label="음원 분리 완료", state="complete")
 
     # 3) Visual Mapping
     if do_visual:
         from music_analysis import visual_mapping as vm
-        with st.status("🌌 Visual Mapping (Genius + Gemini)...", expanded=True) as s:
+        with st.status("Visual Mapping (Genius + Gemini)...", expanded=True) as s:
             inner = st.progress(0.0, text="시작")
             try:
                 result = vm.process_kpop_visualization(
@@ -1072,9 +1113,9 @@ def _run_pipelines(
                     progress_cb=lambda p, m: inner.progress(p, text=m),
                 )
                 bundle["visual"] = result
-                s.update(label="🌌 Visual Mapping 완료", state="complete")
+                s.update(label="Visual Mapping 완료", state="complete")
             except Exception as e:
-                s.update(label=f"🌌 Visual Mapping 실패: {e}", state="error")
+                s.update(label=f"Visual Mapping 실패: {e}", state="error")
 
     return bundle
 
@@ -1107,11 +1148,11 @@ def _input_form():
         st.markdown("**실행할 파이프라인**")
         cc1, cc2, cc3, cc4 = st.columns(4)
         with cc1:
-            do_analysis = st.checkbox("🎼 음악 분석", value=True, help="피치 / 구조 경계 / 분위기")
+            do_analysis = st.checkbox("음악 분석", value=True, help="피치 / 구조 경계 / 분위기")
         with cc2:
-            do_split = st.checkbox("🎧 음원 분리", value=True, help="채널 + Demucs 4-stem")
+            do_split = st.checkbox("음원 분리", value=True, help="채널 + Demucs 4-stem")
         with cc3:
-            do_visual = st.checkbox("🌌 Visual Mapping", value=True, help="Genius + Gemini 분류")
+            do_visual = st.checkbox("Visual Mapping", value=True, help="Genius + Gemini 분류")
         with cc4:
             force_visual = st.checkbox("Visual 캐시 무시", value=False)
 
@@ -1167,7 +1208,6 @@ def _input_form():
 def main():
     st.set_page_config(
         page_title="Spatial Audio Visualization",
-        page_icon="🎧",
         layout="wide",
     )
 
@@ -1184,10 +1224,10 @@ def main():
     st.divider()
 
     tab_analysis, tab_split, tab_visual, tab_db = st.tabs([
-        "🎼 음악 분석",
-        "🎧 음원 분리",
-        "🌌 Visual Mapping",
-        "📚 캐시 DB",
+        "음악 분석",
+        "음원 분리",
+        "Visual Mapping",
+        "캐시 DB",
     ])
     with tab_analysis:
         tab_music_analysis()
