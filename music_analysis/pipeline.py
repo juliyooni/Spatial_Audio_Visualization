@@ -349,6 +349,7 @@ def merge_boundaries(
     *,
     merge_tol_sec: float = 3.0,
     min_segment_sec: float = 10.0,
+    head_skip_sec: float = 3.0,
 ) -> Dict:
     """구조 경계 + 분위기 경계를 통합해 하나의 섹셔닝으로 만든다.
 
@@ -361,11 +362,14 @@ def merge_boundaries(
        유사도는 3차원 유클리드 거리. 한쪽 이웃이 없으면 있는 쪽으로.
     """
     # 1) 합치기 — 각 경계의 (시간, 출처) 태그도 같이 보관
+    # 도입부(head_skip_sec) 안쪽의 경계는 드롭 — 곡 시작 0.0은 아래 단계에서 강제로 들어감.
     tagged: list[tuple[float, set[str]]] = []
     for t in struct_bounds:
-        tagged.append((float(t), {"struct"}))
+        if float(t) >= head_skip_sec:
+            tagged.append((float(t), {"struct"}))
     for t in mood_bounds:
-        tagged.append((float(t), {"mood"}))
+        if float(t) >= head_skip_sec:
+            tagged.append((float(t), {"mood"}))
     tagged.sort(key=lambda x: x[0])
 
     # 2) 허용 오차 내 병합
@@ -524,6 +528,7 @@ def analyze_track(path: str, progress_cb=None) -> Dict:
         mood["mood_boundaries"]["times"],
         mood["frames"],
         duration=float(duration),
+        min_segment_sec=0.0,
     )
 
     if progress_cb:
