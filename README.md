@@ -1,240 +1,132 @@
-# 7.1.4 Spatial Audio Visualization System
+# Spatial Audio Visualization — K-pop 통합 분석 앱
 
-7.1.4 채널 공간 음향 데이터를 활용한 **StyleGAN3 기반 영상 생성 시스템**.
-사용자가 레퍼런스 이미지와 7.1.4 오디오를 업로드하면, 12개 채널의 공간 좌표를 설정하고, 오디오 에너지에 반응하는 영상을 생성합니다.
+K-pop 한 곡을 업로드하면 **음악 분석 / 음원 분리 / 비주얼 매핑**을 한 번에 돌리고 결과를 탭으로 비교해볼 수 있는 Streamlit 앱.
+
+상세한 알고리즘 설명은 [docs/pipeline.md](docs/pipeline.md) 참고.
 
 ---
 
-## 시스템 구조
+## 한눈에
+
+```
+[ 입력 폼 ]
+음원 파일 + 제목 + 아티스트 + 실행할 파이프라인 체크박스
+        │
+        ▼
+선택된 파이프라인을 순차 실행
+        │
+        ├── 🎼 음악 분석   — pitch / 구조 경계 / 분위기 / 통합 섹셔닝
+        ├── 🎧 음원 분리   — 채널(L/R/Mid/Side) + Demucs 4-stem
+        └── 🌌 Visual Mapping — Librosa + Genius + Gemini → 비주얼 컨셉 JSON
+        │
+        ▼
+탭 4개에서 결과 확인 (음악 분석 · 음원 분리 · Visual Mapping · 캐시 DB)
+```
+
+같은 업로드 한 번으로 셋 다 일관된 결과를 얻는 게 핵심.
+
+---
+
+## 디렉토리 구조
 
 ```
 Spatial_Audio_Visualization/
 │
-├── src/                          # 프론트엔드 (React + Vite)
-│   ├── main.jsx                  # 엔트리포인트
-│   ├── index.css                 # Tailwind CSS
-│   ├── App.jsx                   # 워크플로우 상태 머신 (Upload→Setup→Bake→Play)
-│   └── components/
-│       ├── UploadStep.jsx        # 이미지/오디오 파일 업로드 UI
-│       ├── SetupStep.jsx         # 5스크린 프리뷰 + 12채널 마커 드래그
-│       ├── ScreenLayout.jsx      # L2/L1/CENTER/R1/R2 스크린 배치
-│       ├── MarkerOverlay.jsx     # 12개 드래그 가능 마커 (Framer Motion)
-│       ├── BakeStep.jsx          # Bake 진행률 UI (시뮬레이션 / SSE 모드)
-│       └── PlayStep.jsx          # 결과 영상 재생 + 12채널 실시간 레벨 미터
+├── streamlit_app.py              # 앱 본체 (입력 폼 + 결과 탭들)
+├── requirements.txt              # Python 의존성
+├── packages.txt                  # Streamlit Cloud용 apt 패키지 (ffmpeg, libsndfile1)
 │
-├── backend/                      # 백엔드 (FastAPI + PyTorch)
-│   ├── main.py                   # FastAPI 앱 + CORS + MPS 메모리 설정
-│   ├── config.py                 # 디바이스/경로/오디오/비디오 설정값
-│   ├── requirements.txt          # Python 의존성
-│   ├── run.sh                    # 서버 시작 스크립트
-│   ├── api/
-│   │   └── routes.py             # REST API 엔드포인트 정의
-│   ├── core/
-│   │   ├── audio_analyzer.py     # 12채널 오디오 → RMS/Onset 분석 (Librosa)
-│   │   ├── spatial_modulator.py  # 좌표+RMS → Gaussian Energy Map → Warp Field
-│   │   ├── stylegan3_engine.py   # StyleGAN3 모델 로드 + 텍스처 생성
-│   │   └── video_baker.py        # 5스크린 합성 + 이펙트 + FFmpeg 인코딩
-│   ├── models/                   # StyleGAN3 .pkl 모델 (자동 다운로드)
-│   ├── uploads/                  # 업로드된 파일 임시 저장
-│   └── outputs/                  # 생성된 영상 파일
+├── music_analysis/
+│   ├── pipeline.py               # 피치 / 구조 / 분위기 / 통합 섹셔닝
+│   ├── visual_mapping.py         # iTunes/YouTube 음원 + Genius + Gemini
+│   ├── kpop_visual_db.json       # Visual Mapping 결과 캐시 (DB)
+│   └── *.ipynb                   # 알고리즘 프로토타입 노트북
 │
-├── index.html                    # Vite HTML
-├── vite.config.js                # Vite + Tailwind 설정
-├── package.json                  # Node.js 의존성
-└── .gitignore
-```
-
-**총 코드**: ~1,880줄 (프론트 830줄 + 백엔드 1,050줄)
-
----
-
-## 기술 스택
-
-| 영역 | 기술 |
-|------|------|
-| 프론트엔드 | React 19, Vite 8, Tailwind CSS 4, Framer Motion |
-| 백엔드 | Python 3.11, FastAPI, Uvicorn |
-| AI/ML | PyTorch (MPS), NVIDIA StyleGAN3 (`stylegan3-t-metfaces-1024x1024.pkl`) |
-| 오디오 분석 | Librosa, SoundFile |
-| 영상 인코딩 | FFmpeg (H.264/AAC) |
-| 통신 | REST API + SSE (Server-Sent Events) |
-
----
-
-## 워크플로우 (4단계)
-
-### Step 1: Upload
-- 사용자가 **레퍼런스 이미지**(PNG/JPG)와 **7.1.4 오디오 파일**(WAV/FLAC/MP3)을 업로드
-- 파일 객체(File)와 blob URL을 모두 보존하여 백엔드 전송 및 프리뷰에 사용
-
-### Step 2: Setup
-- 레퍼런스 이미지를 **5개 스크린**으로 배치하여 프리뷰:
-  - `L2`, `L1`: 원본 이미지 좌측 50% 영역 크롭
-  - `CENTER`: 원본 전체 이미지 (16:9 대형)
-  - `R1`, `R2`: 원본 이미지 우측 50% 영역 크롭
-- **12개 채널 마커**(L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltf, Rtf, Ltr, Rtr)를 드래그하여 시각적 발원지 설정
-- 각 마커의 좌표는 **0.0~1.0 정규화**되어 저장
-- **Flat/7.1.4 모드 토글**: Flat 모드 시 모든 마커가 중앙으로 수렴 (공간감 제거 시각화)
-
-### Step 3: Bake
-- 프론트에서 `POST /api/bake`로 이미지 + 오디오 + 채널 좌표 JSON 전송
-- 백엔드에서 SSE 스트림으로 진행률 실시간 전송
-- 파이프라인:
-  1. StyleGAN3 모델 로드 (CPU, 자동 다운로드)
-  2. Seed → W 벡터 계산 (CPU, instant)
-  3. 12채널 오디오 RMS/Onset 분석 (Librosa)
-  4. W-space 시퀀스 생성 (누적 드리프트 + 에너지 점프)
-  5. 프레임별 생성:
-     - 5스크린 레이아웃 합성 (1920x1080)
-     - 채널별 방사형 왜곡 (radial warp)
-     - 채널별 색상 glow 이펙트
-     - **StyleGAN3 텍스처 블렌딩** (채널 색상 틴트 + 에너지 비례 강도)
-     - 채널 마커 + 에너지 링 오버레이
-  6. FFmpeg H.264 인코딩 (오디오 스테레오 다운믹스 포함)
-
-### Step 4: Play
-- 생성된 MP4 영상 재생 (`GET /api/video/{name}`)
-- **Web Audio API** AnalyserNode로 12채널 실시간 레벨 미터 표시
-- 채널 좌표 JSON 출력 및 클립보드 복사 기능
-
----
-
-## API 엔드포인트
-
-| Method | Path | 설명 |
-|--------|------|------|
-| `GET` | `/health` | 서버 상태 + GPU 백엔드 확인 |
-| `POST` | `/api/analyze` | 12채널 오디오 → 채널별 RMS/Onset JSON |
-| `POST` | `/api/bake` | 영상 생성 (SSE 스트림으로 진행률 전송) |
-| `GET` | `/api/video/{filename}` | 생성된 영상 파일 서빙 |
-
-### `/api/bake` 요청 형식
-
-```
-Content-Type: multipart/form-data
-
-Fields:
-  image: File (레퍼런스 이미지)
-  audio: File (7.1.4 채널 오디오)
-  channel_positions: JSON string
-    예: {"L": {"x": 0.25, "y": 0.45}, "R": {"x": 0.75, "y": 0.45}, ...}
-```
-
-### `/api/bake` SSE 응답 형식
-
-```
-data: {"status": "processing", "message": "Loading StyleGAN3 model...", "progress": 0.0}
-data: {"status": "processing", "message": "Generating frames...", "progress": 0.5}
-data: {"status": "complete", "video_url": "/api/video/output_xxx.mp4", "progress": 1.0}
-data: {"status": "error", "message": "...", "progress": -1}
+├── docs/
+│   └── pipeline.md               # 파이프라인 기술 문서
+│
+└── samples/                      # 샘플 오디오 (gitignored, .gitkeep만 추적)
 ```
 
 ---
 
-## 핵심 알고리즘
+## 주요 기능
 
-### 1. Spatial Energy Map (spatial_modulator.py)
-12개 채널의 `(x, y)` 좌표와 RMS 값을 결합하여 2D 가우시안 블롭을 합산.
-이 에너지 맵에서 Sobel 기반 기울기를 계산하여 Warp Field를 생성.
+### 🎼 음악 분석 (`music_analysis/pipeline.py`)
+- **피치**: pYIN으로 f0 / MIDI / voiced 추정
+- **구조 경계**: chroma + MFCC 기반 라플라시안 세그멘테이션 (McFee & Ellis 2014). 비트 정렬.
+- **분위기**: 프레임마다 valence / energy / tension 산출 → novelty peak로 분위기 전환부 검출
+- **통합 섹셔닝**: 두 종류 경계를 ±3초 내에서 묶어 하나의 섹션 트랙으로 합성. 도입부 0~3초는 경계 제외.
 
-```
-E(x,y,t) = Σ_ch  RMS(ch,t) × exp(-||(x,y) - (x_ch, y_ch)||² / 2σ²)
-```
+### 🎧 음원 분리
+- **채널 분리**: L / R / Mid / Side (즉시)
+- **트랙 분리**: Demucs `htdemucs` 4-stem(보컬/드럼/베이스/기타) — Apple Silicon에선 MPS, 그 외 CPU
+- 결과 탭에서 **프리셋 토글**(보컬+멜로디, 비트만, 반주만 등) 가능
 
-### 2. StyleGAN3 W-space Modulation (stylegan3_engine.py)
-프리트레인된 StyleGAN3 생성기의 W 벡터를 오디오 에너지에 따라 변조.
-- **누적 드리프트**: 매 프레임 미세하게 진화 → 유기적 텍스처 변화
-- **에너지 점프**: 비트에 맞춰 중간 레이어 W를 강하게 변조 → 극적인 시각 변화
-- 모델은 CPU에 상주, 프레임 생성 시에만 MPS로 이동 후 즉시 반환
+### 🌌 Visual Mapping
+가사 유무에 따라 두 분기로 라우팅:
+- **known 분기** — Genius 가사 있음 → `gemini-2.5-flash`에 가사+Librosa 피처 전달
+- **new 분기** — 가사 없는 신곡 → `gemini-2.5-pro`에 오디오 파일 통째로 첨부
 
-### 3. 5-Screen Compositing (video_baker.py)
-매 프레임:
-1. 레퍼런스 이미지를 5개 스크린 비율로 크롭/배치
-2. 채널 마커 위치에 RMS 비례 방사형 왜곡 (`scipy.ndimage.map_coordinates`)
-3. 채널 색상별 가우시안 glow 추가
-4. StyleGAN3 텍스처를 채널 위치에 최대 80% 블렌딩 (채널 색상 틴트)
-5. 채널 마커 + 에너지 링 오버레이 (PIL ImageDraw)
-
-### 4. M4 MacBook MPS 메모리 관리
-16GB 통합 메모리 제약 하에서 StyleGAN3 512px 모델 구동:
-- `PYTORCH_MPS_HIGH_WATERMARK_RATIO=1.0` (최대 메모리 사용)
-- `PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7`
-- 프레임별 `CPU→MPS→synthesis→CPU→flush` 사이클
-- `torch.mps.synchronize()` + `empty_cache()` + `gc.collect()`
+출력 JSON: `sonic_texture / narrative_archetype / visual_symbols / color_palette / reasoning_brief` — 모두 사전 정의된 분류 라벨로 일관성 유지.
 
 ---
 
-## 실행 방법
+## 실행
 
 ### 사전 요구사항
-- Node.js 18+
 - Python 3.11+
-- FFmpeg (`brew install ffmpeg`)
+- ffmpeg (`brew install ffmpeg`)
+- API 키 두 개: [Genius](https://genius.com/api-clients), [Gemini](https://aistudio.google.com/app/apikey)
 
-### 프론트엔드
-
-```bash
-npm install
-npm run dev
-# http://localhost:5173
-```
-
-### 백엔드
+### 로컬 개발
 
 ```bash
-python3 -m venv .venv
+python -m venv .venv
 source .venv/bin/activate
-pip install -r backend/requirements.txt
+pip install -r requirements.txt
 
-PYTORCH_MPS_HIGH_WATERMARK_RATIO=1.0 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.7 \
-  uvicorn backend.main:app --reload --port 8000
+# .env에 키 작성 (gitignored)
+cat > .env <<EOF
+GENIUS_ACCESS_TOKEN=...
+GEMINI_API_KEY=...
+EOF
+
+streamlit run streamlit_app.py
 ```
 
-StyleGAN3 모델(`stylegan3-t-metfaces-1024x1024.pkl`)은 첫 실행 시 자동 다운로드됩니다.
+### Streamlit Community Cloud 배포
 
-### 백엔드 없이 실행 (시뮬레이션 모드)
-`src/App.jsx`에서 `USE_BACKEND = false`로 설정하면 백엔드 없이 프론트만으로 동작합니다.
-Bake 단계는 프로그레스 시뮬레이션으로 대체됩니다.
+`.streamlit/secrets.toml`(gitignored) 또는 앱 Settings → Secrets에 다음을 등록:
+
+```toml
+GENIUS_ACCESS_TOKEN = "..."
+GEMINI_API_KEY = "..."
+```
+
+`load_env`가 `st.secrets → os.environ → .env` 순으로 폴백하므로 둘 다 자동으로 인식.
 
 ---
 
-## 7.1.4 채널 배치
+## 데이터 캐시
 
-```
-         Ltf ---- Rtf          (Top Front)
-        /    \  /    \
-      Ltr --- C --- Rtr        (Top Rear)
-     /   \   |   /   \
-    L --- Ls-|-Rs --- R        (Ear Level)
-     \   /   |   \   /
-      Lrs ---+--- Rrs         (Rear)
-             |
-            LFE               (Subwoofer)
-```
-
-| 채널 | 이름 | 기본 위치 |
-|------|------|-----------|
-| L | Left | (0.25, 0.45) |
-| R | Right | (0.75, 0.45) |
-| C | Center | (0.50, 0.40) |
-| LFE | Subwoofer | (0.50, 0.70) |
-| Ls | Left Surround | (0.10, 0.50) |
-| Rs | Right Surround | (0.90, 0.50) |
-| Lrs | Left Rear Surround | (0.08, 0.75) |
-| Rrs | Right Rear Surround | (0.92, 0.75) |
-| Ltf | Left Top Front | (0.30, 0.20) |
-| Rtf | Right Top Front | (0.70, 0.20) |
-| Ltr | Left Top Rear | (0.20, 0.30) |
-| Rtr | Right Top Rear | (0.80, 0.30) |
+- **Visual Mapping 결과**: [music_analysis/kpop_visual_db.json](music_analysis/kpop_visual_db.json)에 `(title, artist)` 정규화 키로 저장. 같은 곡 재요청 시 Gemini 호출 안 함.
+- **음원**: iTunes 미리듣기(30초)를 1순위, 실패 시 사용자가 준 YouTube URL을 yt-dlp로 받아옴.
 
 ---
 
-## 생성 영상 사양
+## 내보내기 (CSV/WAV ZIP)
 
-| 항목 | 값 |
-|------|-----|
-| 해상도 | 1920 x 1080 (Full HD) |
-| FPS | 30 |
-| 코덱 | H.264 (libx264), CRF 18 |
-| 오디오 | AAC 256kbps, 스테레오 다운믹스 |
-| StyleGAN3 텍스처 | 1024 → 512 리사이즈 (MetFaces 유화 모델) |
+음악 분석 탭 하단의 **ZIP 생성** 버튼:
+- `*_L.wav` / `*_R.wav` — 채널 분리 음원
+- `*_sections.csv` — **통합 섹션** (있을 때) 또는 mood 섹션. valence/energy/tension/mood_label/boundary_sources 포함
+- `*_pitch.csv` — 시간별 f0/midi/voiced
+- `*_mood_frames.csv` — 시간별 valence/energy/tension/brightness
+- `*_boundaries.csv` — 구조/분위기 경계 raw 시각
+
+---
+
+## 라이센스 / 출처
+
+- 구조 세그멘테이션: McFee, B., & Ellis, D. P. W. (2014). *Analyzing song structure with spectral clustering.* ISMIR.
+- Demucs: Défossez, A. (2021). *Hybrid Spectrogram and Waveform Source Separation.*
