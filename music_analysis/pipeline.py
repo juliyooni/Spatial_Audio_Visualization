@@ -569,14 +569,29 @@ def export_result(result: Dict, out_dir: str | None = None) -> str:
     sf.write(os.path.join(out_dir, f"{stem}_L.wav"), result["_audio"]["left"], sr)
     sf.write(os.path.join(out_dir, f"{stem}_R.wav"), result["_audio"]["right"], sr)
 
-    sections = result["mood"]["sections"]
-    with open(os.path.join(out_dir, f"{stem}_sections.csv"), "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=[
+    # 통합 섹션이 있으면 그걸 내보내고, 없을 때만 mood 섹션으로 폴백.
+    unified = result.get("unified") or {}
+    if unified.get("sections"):
+        sections = unified["sections"]
+        section_fields = [
             "section_idx", "start", "end", "duration",
             "valence", "energy", "tension", "mood_label",
-        ])
+            "boundary_sources",
+        ]
+    else:
+        sections = result["mood"]["sections"]
+        section_fields = [
+            "section_idx", "start", "end", "duration",
+            "valence", "energy", "tension", "mood_label",
+        ]
+    with open(os.path.join(out_dir, f"{stem}_sections.csv"), "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=section_fields, extrasaction="ignore")
         w.writeheader()
-        w.writerows(sections)
+        for s in sections:
+            row = dict(s)
+            if "boundary_sources" in row and isinstance(row["boundary_sources"], list):
+                row["boundary_sources"] = "+".join(row["boundary_sources"])
+            w.writerow(row)
 
     pitch = result["pitch"]
     with open(os.path.join(out_dir, f"{stem}_pitch.csv"), "w", newline="") as f:
