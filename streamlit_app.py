@@ -920,7 +920,16 @@ def tab_music_analysis():
 
     st.divider()
     st.subheader("내보내기")
-    st.caption("L/R wav + sections/pitch/mood_frames/boundaries/meta CSV를 ZIP으로 묶어 다운로드.")
+    if unified.get("sections"):
+        st.caption(
+            "L/R wav + 통합 sections/pitch/mood_frames/boundaries/meta CSV를 ZIP으로 묶어 다운로드. "
+            "sections·boundaries는 통합 분석 결과가 들어갑니다 (boundary_sources=struct/mood/struct+mood)."
+        )
+    else:
+        st.caption(
+            "L/R wav + sections/pitch/mood_frames/boundaries/meta CSV를 ZIP으로 묶어 다운로드. "
+            "⚠️ 통합 분석 결과가 비어 있어 mood 섹션과 raw 경계로 폴백합니다 — 분석을 다시 돌리세요."
+        )
 
     if st.button("ZIP 생성", key="analysis_export"):
         with st.spinner("CSV/WAV 생성 중..."):

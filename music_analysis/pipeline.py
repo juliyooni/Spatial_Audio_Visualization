@@ -618,19 +618,27 @@ def export_result(result: Dict, out_dir: str | None = None) -> str:
                 round(float(mf["brightness"][i]), 4),
             ])
 
-    struct_set = set(result["segmentation"]["boundary_times"])
-    mood_set = set(result["mood"]["mood_boundaries"]["times"])
-    all_bounds = sorted(struct_set | mood_set)
+    # 통합 경계가 있으면 그걸 내보내고, 없을 때만 raw struct ∪ mood로 폴백.
     with open(os.path.join(out_dir, f"{stem}_boundaries.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["time", "type"])
-        for t in all_bounds:
-            types = []
-            if t in struct_set:
-                types.append("structural")
-            if t in mood_set:
-                types.append("mood")
-            w.writerow([round(t, 3), "+".join(types)])
+        if unified.get("boundary_times"):
+            w.writerow(["time", "source"])
+            ub = unified["boundary_times"]
+            us = unified.get("boundary_sources", [[] for _ in ub])
+            for t, srcs in zip(ub, us):
+                w.writerow([round(t, 3), "+".join(srcs) if srcs else ""])
+        else:
+            struct_set = set(result["segmentation"]["boundary_times"])
+            mood_set = set(result["mood"]["mood_boundaries"]["times"])
+            all_bounds = sorted(struct_set | mood_set)
+            w.writerow(["time", "source"])
+            for t in all_bounds:
+                types = []
+                if t in struct_set:
+                    types.append("struct")
+                if t in mood_set:
+                    types.append("mood")
+                w.writerow([round(t, 3), "+".join(types)])
 
     with open(os.path.join(out_dir, f"{stem}_meta.csv"), "w", newline="") as f:
         w = csv.writer(f)
