@@ -109,5 +109,42 @@
       },
       "reasoning_brief": "미니멀한 신스 사운드와 'Tik, tok' 가사에서 드러나는 시간적 압박감이 신스팝의 특징을 나타냅니다. 'ASAP', 'Hurry up' 등의 가사와 끊임없이 소통하려는 내용은 하이틴의 즉각적인 감성과 연결됩니다. 높은 에너지와 낮은 Valence는 밝고 채도 높은 차가운 색상으로 표현했습니다."
     }
+  },
+  "dynamite__bts": {
+    "metadata": {
+      "title": "dynamite",
+      "artist": "bts",
+      "branch": "known",
+      "genius_url": "https://genius.com/Bts-dynamite-lyrics",
+      "audio_source": "tmp_h3_7izo.mp3"
+    },
+    "live_features": {
+      "duration": 200.2560090702948,
+      "tempo": 112.34714673913044,
+      "energy": 1.0,
+      "valence": 0.44070415021668646,
+      "danceability": 0.6791852921195652,
+      "key": 4,
+      "harmonic_ratio": 0.6690480732661822,
+      "dynamics_range": 4.673985958099365,
+      "_source": "librosa"
+    },
+    "concept_features": {
+      "sonic_texture": "Synth-pop",
+      "narrative_archetype": "Retro-nostalgia",
+      "visual_symbols": [
+        "Dynamite",
+        "Stars",
+        "Diamond"
+      ],
+      "color_palette": {
+        "main": "#FFD700",
+        "sub": [
+          "#FF1493",
+          "#00BFFF"
+        ]
+      },
+      "reasoning_brief": "높은 에너지와 댄서블한 리듬, 'Disco overload' 등의 가사에서 신스팝 사운드와 레트로 향수를 도출했습니다. 'Dynamite', 'Stars', 'Diamond' 등 빛나고 폭발적인 시각적 요소와 밝고 활기찬 컬러 팔레트를 선정했습니다."
+    }
   }
 }
