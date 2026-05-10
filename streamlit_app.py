@@ -864,6 +864,19 @@ def tab_music_analysis():
         unsafe_allow_html=True,
     )
 
+    # 도입부 0~3초 안쪽 경계는 어떤 뷰에서도 그리지 않는다.
+    # (캐시된 옛 result에는 unified에 head_skip이 안 적용돼 있을 수 있어 여기서 한 번 더 거름)
+    HEAD_SKIP_SEC = 3.0
+    struct_bounds_clean = [b for b in result["segmentation"]["boundary_times"] if b >= HEAD_SKIP_SEC]
+    mood_bounds_clean = [b for b in result["mood"]["mood_boundaries"]["times"] if b >= HEAD_SKIP_SEC]
+    unified_filtered: list[float] = []
+    unified_filtered_srcs: list[list[str]] = []
+    for t, srcs in zip(unified.get("boundary_times", []), unified.get("boundary_sources", [])):
+        # 곡 시작 0.0(start)은 살리고, 그 외에 도입부 안쪽이면 드롭.
+        if t == 0.0 or t >= HEAD_SKIP_SEC:
+            unified_filtered.append(t)
+            unified_filtered_srcs.append(srcs)
+
     for idx, view in enumerate(selected_views):
         # "구조 경계" → 빨강만, "분위기 경계" → 파랑만, "통합 분석" → 셋 다 표시
         is_unified_view = view == "통합 분석"
@@ -881,13 +894,13 @@ def tab_music_analysis():
                 audio_bytes=audio_bytes,
                 audio_mime=audio_mime,
                 duration=float(result["duration_sec"]),
-                struct_bounds=result["segmentation"]["boundary_times"],
-                mood_bounds=result["mood"]["mood_boundaries"]["times"],
+                struct_bounds=struct_bounds_clean,
+                mood_bounds=mood_bounds_clean,
                 sections=ws_sections,
                 show_struct=show_struct,
                 show_mood=show_mood,
-                unified_bounds=unified.get("boundary_times"),
-                unified_sources=unified.get("boundary_sources"),
+                unified_bounds=unified_filtered,
+                unified_sources=unified_filtered_srcs,
                 show_unified=show_unified,
                 view_title=view,
             )
