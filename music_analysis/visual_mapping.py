@@ -59,7 +59,34 @@ Constraint: 오직 JSON만 출력하고 다른 부연 설명은 하지 않는다
 # ──────────────────────────────────────────────────────────────
 
 def load_env():
-    """`.env`를 읽고 (GENIUS_ACCESS_TOKEN, GEMINI_API_KEY) 반환."""
+    """API 키 (GENIUS_ACCESS_TOKEN, GEMINI_API_KEY) 반환.
+
+    배포(Streamlit Cloud)에선 st.secrets, 로컬에선 .env를 우선한다:
+      1. st.secrets — Cloud에 secrets.toml이 주입돼 있을 때
+      2. os.environ — 셸/CI에서 직접 export한 경우
+      3. .env (dotenv) — 로컬 개발 기본값
+    """
+    # 1) Streamlit secrets — 배포 환경에서만 secrets.toml이 존재
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets"):
+            try:
+                g = st.secrets.get("GENIUS_ACCESS_TOKEN")
+                k = st.secrets.get("GEMINI_API_KEY")
+                if g or k:
+                    return g, k
+            except (FileNotFoundError, KeyError):
+                pass
+    except ImportError:
+        pass
+
+    # 2) 이미 환경변수에 있으면 그걸 사용
+    g = os.getenv("GENIUS_ACCESS_TOKEN")
+    k = os.getenv("GEMINI_API_KEY")
+    if g or k:
+        return g, k
+
+    # 3) 로컬 .env
     try:
         from dotenv import load_dotenv
         load_dotenv(REPO_ROOT / ".env")

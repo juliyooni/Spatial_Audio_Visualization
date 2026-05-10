@@ -35,6 +35,7 @@ __pycache__/
 .env
 .env.local
 *.key
+.streamlit/secrets.toml
 
 # Backend runtime
 backend/uploads/
