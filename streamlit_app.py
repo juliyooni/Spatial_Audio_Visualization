@@ -543,6 +543,7 @@ def _wavesurfer_player(
     unified_sources: list[list[str]] | None = None,
     show_unified: bool = False,
     view_title: str | None = None,
+    show_section_bg: bool = True,
     height: int = 220,
 ):
     """WaveSurfer.js로 파형 + 재생 커서 + 경계 region을 그린다.
@@ -591,6 +592,7 @@ def _wavesurfer_player(
         "show_struct": bool(show_struct),
         "show_mood": bool(show_mood),
         "show_unified": bool(show_unified),
+        "show_section_bg": bool(show_section_bg),
     }
 
     html = f"""
@@ -679,10 +681,13 @@ def _wavesurfer_player(
   ws.on('decode', () => {{
     // 섹션 region (음영 + 라벨, 클릭하면 점프)
     DATA.sections.forEach((s, i) => {{
+      const fill = DATA.show_section_bg
+        ? palette[s.idx % palette.length].replace('0.55', '0.10')
+        : 'rgba(0,0,0,0)';  // 투명 — 라벨은 유지하되 배경 음영 제거
       regions.addRegion({{
         start: s.start,
         end: s.end,
-        color: palette[s.idx % palette.length].replace('0.55', '0.10'),
+        color: fill,
         drag: false, resize: false,
         content: '#' + s.idx + ' ' + s.label,
       }});
@@ -878,11 +883,25 @@ def tab_music_analysis():
             unified_filtered_srcs.append(srcs)
 
     for idx, view in enumerate(selected_views):
-        # "구조 경계" → 빨강만, "분위기 경계" → 파랑만, "통합 분석" → 셋 다 표시
         is_unified_view = view == "통합 분석"
-        show_struct = view == "구조 경계" or is_unified_view
-        show_mood = view == "분위기 경계" or is_unified_view
-        show_unified = is_unified_view
+
+        if is_unified_view:
+            # 통합 뷰: 어떤 경계를 그릴지 체크박스로 사용자 선택
+            st.markdown(f"### 🔍 {view}")
+            cb1, cb2, cb3 = st.columns(3)
+            show_struct = cb1.checkbox(
+                "🔴 구조 경계", value=True, key=f"unified_show_struct_{idx}"
+            )
+            show_mood = cb2.checkbox(
+                "🔵 분위기 경계", value=True, key=f"unified_show_mood_{idx}"
+            )
+            show_unified = cb3.checkbox(
+                "🟢 통합 경계", value=True, key=f"unified_show_unified_{idx}"
+            )
+        else:
+            show_struct = view == "구조 경계"
+            show_mood = view == "분위기 경계"
+            show_unified = False
 
         if is_unified_view and unified.get("sections"):
             ws_sections = unified["sections"]
@@ -902,7 +921,8 @@ def tab_music_analysis():
                 unified_bounds=unified_filtered,
                 unified_sources=unified_filtered_srcs,
                 show_unified=show_unified,
-                view_title=view,
+                view_title=None if is_unified_view else view,
+                show_section_bg=False,
             )
         except Exception as e:
             st.warning(f"플레이어 로드 실패: {e}")

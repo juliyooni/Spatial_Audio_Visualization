@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('streamlit_app.py'\\).read\\(\\)\\); ast.parse\\(open\\('music_analysis/pipeline.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(git commit -m ' *)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('music_analysis/pipeline.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}

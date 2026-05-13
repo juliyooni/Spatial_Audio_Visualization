@@ -88,6 +88,46 @@ def extract_pitch(y: np.ndarray, sr: int) -> Dict:
 # 3. 구조 경계 (라플라시안 스펙트럴 분해)
 # ──────────────────────────────────────────────────────────────
 
+def estimate_downbeats(y: np.ndarray, sr: int, beats: np.ndarray, beats_per_bar: int = 4) -> np.ndarray:
+    """비트 시각에서 다운비트(마디 첫 박) 시각을 추정.
+
+    K-pop은 4/4가 압도적이라 4비트가 1마디라고 가정. 첫 다운비트가 1번째 비트인지
+    2/3/4번째 비트인지(phase)를 onset envelope 강도 합산으로 추정 — 가장 강한 박이
+    1박일 확률이 높음.
+
+    Args:
+        y: mono waveform
+        sr: sample rate
+        beats: librosa.beat.beat_track이 반환한 frame index 배열
+        beats_per_bar: 한 마디의 박 수 (K-pop 기본 4)
+
+    Returns:
+        다운비트 시각 (초) ndarray
+    """
+    if len(beats) < beats_per_bar:
+        return np.array([], dtype=float)
+
+    beat_times = librosa.frames_to_time(beats, sr=sr)
+
+    # onset envelope를 각 비트에 매핑 — 비트 프레임에서의 onset 강도
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    beat_strength = np.zeros(len(beats), dtype=float)
+    for i, bi in enumerate(beats):
+        if 0 <= bi < len(onset_env):
+            beat_strength[i] = float(onset_env[bi])
+
+    # 4개 phase 후보 중 합산 강도가 가장 큰 것을 1박으로 채택
+    best_phase = 0
+    best_score = -1.0
+    for phase in range(beats_per_bar):
+        score = float(beat_strength[phase::beats_per_bar].sum())
+        if score > best_score:
+            best_score = score
+            best_phase = phase
+
+    return beat_times[best_phase::beats_per_bar]
+
+
 def segment_song(y: np.ndarray, sr: int, min_segment_sec: float = 8.0) -> Dict:
     duration = librosa.get_duration(y=y, sr=sr)
 
@@ -197,6 +237,7 @@ def segment_song(y: np.ndarray, sr: int, min_segment_sec: float = 8.0) -> Dict:
         "tempo": tempo_val,
         "boundary_times": boundary_times,
         "labels": seg_labels,
+        "beats": beats,  # frame indices — estimate_downbeats가 사용
     }
 
 
@@ -350,13 +391,16 @@ def merge_boundaries(
     merge_tol_sec: float = 3.0,
     min_segment_sec: float = 10.0,
     head_skip_sec: float = 3.0,
+    downbeats: np.ndarray | None = None,
 ) -> Dict:
     """구조 경계 + 분위기 경계를 통합해 하나의 섹셔닝으로 만든다.
 
-    1. 두 경계 리스트를 합쳐 시간순 정렬
+    1. 두 경계 리스트를 합쳐 시간순 정렬. head_skip_sec 안쪽은 드롭.
     2. 인접 경계 간격이 merge_tol_sec(=3.0) 이하면 하나로 묶고 **구조 경계 시간을 우선** 채택
        (구조 경계가 비트에 정렬되어 있어 음악적으로 더 자연스러움). 묶음에 구조 경계가
        없으면 분위기 경계 시간들의 평균.
+    2.5 (옵션) downbeats가 주어지면 각 경계를 **가장 가까운 마디 첫 박**으로 스냅.
+       같은 다운비트로 빨려간 경계는 출처 합집합으로 dedup. 곡 시작/끝(0/duration)은 제외.
     3. 합친 경계로 섹션을 만든 뒤, min_segment_sec(=10.0) 미만 섹션은
        **(valence, energy, tension) 평균이 더 비슷한 이웃에 흡수**한다.
        유사도는 3차원 유클리드 거리. 한쪽 이웃이 없으면 있는 쪽으로.
@@ -409,6 +453,23 @@ def merge_boundaries(
     if not times_only or times_only[-1] < duration:
         merged.append((float(duration), {"end"}))
     merged.sort(key=lambda x: x[0])
+
+    # 2.5) 다운비트 스냅 — 각 경계를 가장 가까운 마디 첫 박으로 끌어당김.
+    # 곡 시작(0.0)과 끝(duration)은 스냅 대상이 아님(악곡 끝을 마디로 자를 이유 없음).
+    # 같은 다운비트로 빨려간 경계는 출처(struct/mood) 합집합으로 dedup.
+    if downbeats is not None and len(downbeats) > 0:
+        db_arr = np.asarray(downbeats, dtype=float)
+        snapped: dict[float, set[str]] = {}
+        for t, srcs in merged:
+            if t == 0.0 or t >= duration:
+                key = t
+            else:
+                key = float(db_arr[int(np.argmin(np.abs(db_arr - t)))])
+            if key in snapped:
+                snapped[key] |= srcs
+            else:
+                snapped[key] = set(srcs)
+        merged = sorted(snapped.items(), key=lambda x: x[0])
 
     # 3) 섹션화 + 짧은 섹션 흡수
     def _section_vet(start: float, end: float) -> tuple[float, float, float]:
@@ -523,12 +584,14 @@ def analyze_track(path: str, progress_cb=None) -> Dict:
 
     if progress_cb:
         progress_cb(0.95, "통합 섹셔닝")
+    downbeats = estimate_downbeats(y_mono, sr, seg["beats"], beats_per_bar=4)
     unified = merge_boundaries(
         seg["boundary_times"],
         mood["mood_boundaries"]["times"],
         mood["frames"],
         duration=float(duration),
         min_segment_sec=0.0,
+        downbeats=downbeats,
     )
 
     if progress_cb:
@@ -539,6 +602,7 @@ def analyze_track(path: str, progress_cb=None) -> Dict:
         "duration_sec": round(float(duration), 2),
         "sr": sr,
         "tempo_bpm": round(seg["tempo"], 2),
+        "downbeats": [float(t) for t in downbeats],
         "pitch": pitch,
         "segmentation": seg,
         "unified": unified,
